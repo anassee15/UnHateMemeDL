@@ -1,0 +1,12 @@
+transformers>=4.51.0
+torch>=2.6.0
+torchvision
+Pillow
+unsloth
+trl
+peft
+bitsandbytes
+vllm
+accelerate
+datasets
+huggingface_hub
