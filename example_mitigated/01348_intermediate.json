@@ -1,0 +1,22 @@
+{
+  "image_path": "../../data/01348.png",
+  "hateful_detection_raw": "{\n  \"description\": \"The meme uses derogatory language to link a specific extremist group with sexual objectification and mockery, targeting a specific religious and national identity with dehumanizing humor.\",\n  \"classification\": \"hateful\",\n  \"probability\": 0.95\n}",
+  "hateful_detection_parsed": {
+    "is_hateful": true,
+    "probability": 0.95,
+    "description": "The meme uses derogatory language to link a specific extremist group with sexual objectification and mockery, targeting a specific religious and national identity with dehumanizing humor."
+  },
+  "diffusion_prompt_raw": "{\n  \"hate_source\": \"The text explicitly references the terrorist organization 'ISIS' in the context of a sexualized setting, while the visual relies on the racial and religious caricature of men wearing keffiyehs to serve as the butt of the joke.\",\n  \"hate_location\": \"COMBINED\",\n  \"severity\": \"SURGICAL_BOTH\",\n  \"original_text\": \"meanwhile at the isis strip club\",\n  \"replacement_text\": \"meanwhile at the r/place strip club\",\n  \"strategy\": \"Mitigate by completely removing the text overlay to eliminate the hate speech target and simultaneously transforming the subjects of the meme from men in stereotypical Middle Eastern dress to a generic group of men in generic attire (e.g. t-shirts and jeans) to decouple the punchline from racial/religious mockery.\",\n  \"flux_prompt\": \"Transform the bottom panel image so that the three men are wearing casual western clothing such as t-shirts and jeans instead of traditional Middle Eastern keffiyehs and thobes. Ensure their skin tones and facial features remain distinct but their clothing is culturally neutral. Completely remove the white text overlay 'meanwhile at the isis strip club' from the middle of the image, inpainting the area to match the surrounding background or clothing. Preserve the top panel of the sheep exactly as is. Keep the shocked and excited facial expressions of the men in the bottom panel identical to the original image.\",\n  \"expected_change\": \"The output will be a clean image with no text overlay. The bottom panel will show the same men making the same expressions but wearing casual western clothes, removing the racialized context of the meme entirely.\"\n}",
+  "mitigation_parsed": {
+    "hate_source": "The text explicitly references the terrorist organization 'ISIS' in the context of a sexualized setting, while the visual relies on the racial and religious caricature of men wearing keffiyehs to serve as the butt of the joke.",
+    "hate_location": "COMBINED",
+    "severity": "SURGICAL_BOTH",
+    "original_text": "meanwhile at the isis strip club",
+    "replacement_text": "meanwhile at the r/place strip club",
+    "strategy": "Mitigate by completely removing the text overlay to eliminate the hate speech target and simultaneously transforming the subjects of the meme from men in stereotypical Middle Eastern dress to a generic group of men in generic attire (e.g. t-shirts and jeans) to decouple the punchline from racial/religious mockery.",
+    "flux_prompt": "Transform the bottom panel image so that the three men are wearing casual western clothing such as t-shirts and jeans instead of traditional Middle Eastern keffiyehs and thobes. Ensure their skin tones and facial features remain distinct but their clothing is culturally neutral. Completely remove the white text overlay 'meanwhile at the isis strip club' from the middle of the image, inpainting the area to match the surrounding background or clothing. Preserve the top panel of the sheep exactly as is. Keep the shocked and excited facial expressions of the men in the bottom panel identical to the original image.",
+    "expected_change": "The output will be a clean image with no text overlay. The bottom panel will show the same men making the same expressions but wearing casual western clothes, removing the racialized context of the meme entirely."
+  },
+  "status": "mitigated",
+  "mitigated_image_path": "../../data/mitigated/01348_mitigated.png"
+}

@@ -1,0 +1,22 @@
+{
+  "image_path": "../../data/01465.png",
+  "hateful_detection_raw": "{\n  \"description\": \"The meme uses dark humor to trivialize suicide bombing, depicting individuals as human bombs with a caption that deceptively suggests 'no difference' between terrorists and peaceful Muslims. This relies on harmful racial and religious stereotypes, dehumanizing the group by associating the entire religion with terrorism.\",\n  \"classification\": \"hateful\",\n  \"probability\": 0.95\n}",
+  "hateful_detection_parsed": {
+    "is_hateful": true,
+    "probability": 0.95,
+    "description": "The meme uses dark humor to trivialize suicide bombing, depicting individuals as human bombs with a caption that deceptively suggests 'no difference' between terrorists and peaceful Muslims. This relies on harmful racial and religious stereotypes, dehumanizing the group by associating the entire religion with terrorism."
+  },
+  "diffusion_prompt_raw": "```json\n{\n  \"hate_source\": \"The image relies on a dehumanizing visual association between a religious group and terrorism (human bombs), reinforced by text that suggests internal division based on violence.\",\n  \"hate_location\": \"COMBINED\",\n  \"severity\": \"SURGICAL_BOTH\",\n  \"original_text\": \"there is difference between violating muslims and other muslims\\ndont get confoused\",\n  \"replacement_text\": \"Difference between the person who eats the last slice\\nDont get confused\",\n  \"strategy\": \"Replace the figures with generic white cartoon mannequins or mannequins without religious connotations to remove the visual hate speech of depicting humans as human bombs, and replace the hateful text with a neutral relatable joke about sharing food while preserving the meme format.\",\n  \"flux_prompt\": \"Replace the human figures wearing white religious garments and strapped with explosives with plain, featureless white mannequins holding harmless balloons instead of bombs. Ensure the mannequins look generic and neutral. Remove the text overlays. Keep the outdoor background, the red flags in the distance, and the general composition of three figures raising their arms.\",\n  \"expected_change\": \"The image will look like a neutral scene with generic mannequins holding balloons, stripping away the violent and hateful association while keeping the original composition and layout ready for new text.\"\n}\n```",
+  "mitigation_parsed": {
+    "hate_source": "The image relies on a dehumanizing visual association between a religious group and terrorism (human bombs), reinforced by text that suggests internal division based on violence.",
+    "hate_location": "COMBINED",
+    "severity": "SURGICAL_BOTH",
+    "original_text": "there is difference between violating muslims and other muslims\ndont get confoused",
+    "replacement_text": "Difference between the person who eats the last slice\nDont get confused",
+    "strategy": "Replace the figures with generic white cartoon mannequins or mannequins without religious connotations to remove the visual hate speech of depicting humans as human bombs, and replace the hateful text with a neutral relatable joke about sharing food while preserving the meme format.",
+    "flux_prompt": "Replace the human figures wearing white religious garments and strapped with explosives with plain, featureless white mannequins holding harmless balloons instead of bombs. Ensure the mannequins look generic and neutral. Remove the text overlays. Keep the outdoor background, the red flags in the distance, and the general composition of three figures raising their arms.",
+    "expected_change": "The image will look like a neutral scene with generic mannequins holding balloons, stripping away the violent and hateful association while keeping the original composition and layout ready for new text."
+  },
+  "status": "mitigated",
+  "mitigated_image_path": "../../data/mitigated/01465_mitigated.png"
+}

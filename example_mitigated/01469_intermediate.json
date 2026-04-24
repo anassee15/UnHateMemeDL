@@ -1,0 +1,22 @@
+{
+  "image_path": "../../data/01469.png",
+  "hateful_detection_raw": "{\n  \"description\": \"The meme advocates for extreme violence and killing based on a person's religion (Muslim). The text 'punch the muslim kid so hard that he starts having seizures and fucking dies' is a direct call for lethal violence and dehumanization against a protected religious group.\",\n  \"classification\": \"hateful\",\n  \"probability\": 1.0\n}",
+  "hateful_detection_parsed": {
+    "is_hateful": true,
+    "probability": 1.0,
+    "description": "The meme advocates for extreme violence and killing based on a person's religion (Muslim). The text 'punch the muslim kid so hard that he starts having seizures and fucking dies' is a direct call for lethal violence and dehumanization against a protected religious group."
+  },
+  "diffusion_prompt_raw": "```json\n{\n  \"hate_source\": \"The text promotes extreme physical violence against a religious group (Muslims) and dehumanizes them by equating them to 'bombs' to be 'defused' through death.\",\n  \"hate_location\": \"COMBINED\",\n  \"severity\": \"SURGICAL_BOTH\",\n  \"original_text\": \"when you punch the muslim kid so hard that he starts having seizures and fucking dies\\nthe bomb has been defused\",\n  \"replacement_text\": \"when you smash the vending machine so hard that it starts sparking and explodes\\nsnacks are free now\",\n  \"strategy\": \"The hateful text is replaced with a relatable joke about frustration with vending machines (preserving the 'explosion/bomb' pun structure). The visual is altered from a lethal military threat to a comical, low-stakes scenario involving a soda can to match the humor.\",\n  \"flux_prompt\": \"Transform the image content to depict a chaotic but humorous scene of a vending machine exploding or malfunctioning. Replace the heavily armored tactical soldier with a frustrated, disheveled person covered in spilled soda and snacks. The person should look like they just kicked the machine. Replace the tactical weapon with a red soda can. The background remains the same dark, gritty hallway. Keep the meme layout and font style intact.\",\n  \"expected_change\": \"The output will be a meme where the 'bomb defused' text serves as a pun about a vending machine breaking open to release snacks, removing the anti-Muslim violence context.\"\n}\n```",
+  "mitigation_parsed": {
+    "hate_source": "The text promotes extreme physical violence against a religious group (Muslims) and dehumanizes them by equating them to 'bombs' to be 'defused' through death.",
+    "hate_location": "COMBINED",
+    "severity": "SURGICAL_BOTH",
+    "original_text": "when you punch the muslim kid so hard that he starts having seizures and fucking dies\nthe bomb has been defused",
+    "replacement_text": "when you smash the vending machine so hard that it starts sparking and explodes\nsnacks are free now",
+    "strategy": "The hateful text is replaced with a relatable joke about frustration with vending machines (preserving the 'explosion/bomb' pun structure). The visual is altered from a lethal military threat to a comical, low-stakes scenario involving a soda can to match the humor.",
+    "flux_prompt": "Transform the image content to depict a chaotic but humorous scene of a vending machine exploding or malfunctioning. Replace the heavily armored tactical soldier with a frustrated, disheveled person covered in spilled soda and snacks. The person should look like they just kicked the machine. Replace the tactical weapon with a red soda can. The background remains the same dark, gritty hallway. Keep the meme layout and font style intact.",
+    "expected_change": "The output will be a meme where the 'bomb defused' text serves as a pun about a vending machine breaking open to release snacks, removing the anti-Muslim violence context."
+  },
+  "status": "mitigated",
+  "mitigated_image_path": "../../data/mitigated/01469_mitigated.png"
+}

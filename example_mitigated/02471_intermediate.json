@@ -1,0 +1,22 @@
+{
+  "image_path": "../../data/02471.png",
+  "hateful_detection_raw": "{\n  \"description\": \"The meme uses the term 'monkeys' as a slur for people in a welfare office, dehumanizing them and implying they are less than human. This fits the definition of hateful speech through dehumanization and statements of inferiority based on a group's status.\",\n  \"classification\": \"hateful\",\n  \"probability\": 0.95\n}",
+  "hateful_detection_parsed": {
+    "is_hateful": true,
+    "probability": 0.95,
+    "description": "The meme uses the term 'monkeys' as a slur for people in a welfare office, dehumanizing them and implying they are less than human. This fits the definition of hateful speech through dehumanization and statements of inferiority based on a group's status."
+  },
+  "diffusion_prompt_raw": "{\n  \"hate_source\": \"The text 'welfare office' combined with 'hello monkeys' creates a dehumanizing slur comparing people receiving government assistance to animals.\",\n  \"hate_location\": \"COMBINED\",\n  \"severity\": \"SURGICAL_TEXT\",\n  \"original_text\": \"when you walk into the welfare office\\nhello monkeys\",\n  \"replacement_text\": \"when you walk into the pet store\\nhello monkeys\",\n  \"strategy\": \"Redirect the text to a neutral setting (pet store) where 'monkeys' is an acceptable literal statement, removing the dehumanizing implication while keeping the visual absurdity intact.\",\n  \"flux_prompt\": \"Remove the white text overlays from the top and bottom of the image. Repaint the regions previously occupied by the text to match the original beige wall background and carpet texture, ensuring no artifacts remain. Preserve the visual elements of the gorilla, the little girl holding a banana, the waiting room chairs, the lighting, and the overall composition exactly as they appear in the original image.\",\n  \"expected_change\": \"The output will be the original image of the gorilla and the child in the waiting room, but with all text removed, leaving a clean visual canvas suitable for adding the new neutral caption.\"\n}",
+  "mitigation_parsed": {
+    "hate_source": "The text 'welfare office' combined with 'hello monkeys' creates a dehumanizing slur comparing people receiving government assistance to animals.",
+    "hate_location": "COMBINED",
+    "severity": "SURGICAL_TEXT",
+    "original_text": "when you walk into the welfare office\nhello monkeys",
+    "replacement_text": "when you walk into the pet store\nhello monkeys",
+    "strategy": "Redirect the text to a neutral setting (pet store) where 'monkeys' is an acceptable literal statement, removing the dehumanizing implication while keeping the visual absurdity intact.",
+    "flux_prompt": "Remove the white text overlays from the top and bottom of the image. Repaint the regions previously occupied by the text to match the original beige wall background and carpet texture, ensuring no artifacts remain. Preserve the visual elements of the gorilla, the little girl holding a banana, the waiting room chairs, the lighting, and the overall composition exactly as they appear in the original image.",
+    "expected_change": "The output will be the original image of the gorilla and the child in the waiting room, but with all text removed, leaving a clean visual canvas suitable for adding the new neutral caption."
+  },
+  "status": "mitigated",
+  "mitigated_image_path": "../../data/mitigated/02471_mitigated.png"
+}

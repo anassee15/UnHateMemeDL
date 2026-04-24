@@ -1,0 +1,22 @@
+{
+  "image_path": "../../data/01467.png",
+  "hateful_detection_raw": "{\n  \"description\": \"The meme uses the slur 'honky' to refer to a white person. Under the provided definition, this is considered hateful because it uses a dehumanizing and derogatory term based on race/ethnicity.\",\n  \"classification\": \"hateful\",\n  \"probability\": 0.99\n}",
+  "hateful_detection_parsed": {
+    "is_hateful": true,
+    "probability": 0.99,
+    "description": "The meme uses the slur 'honky' to refer to a white person. Under the provided definition, this is considered hateful because it uses a dehumanizing and derogatory term based on race/ethnicity."
+  },
+  "diffusion_prompt_raw": "{\n  \"hate_source\": \"The text at the bottom uses a racial slur (\\\"honky\\\") to create a hateful meme targeting white people.\",\n  \"hate_location\": \"TEXT_ONLY\",\n  \"severity\": \"SURGICAL_TEXT\",\n  \"original_text\": \"it's a great day\\nto be a honky!\",\n  \"replacement_text\": \"it's a great day\\nto be alive!\",\n  \"strategy\": \"The mitigation strategy involves completely removing the text overlays from the image to sanitize the visual content. The diffusion model is instructed to repaint the text areas with the underlying background and clothing textures to restore the image to its original, text-free state.\",\n  \"flux_prompt\": \"Remove the text overlays from the image. Repaint the top area to seamlessly continue the ceiling structure and the bottom area to match the purple fabric of the man's shirt. Preserve the original photograph of the man giving two thumbs up, his facial expression, the background corridor, and the lighting exactly.\",\n  \"expected_change\": \"The output will be the clean, original photograph of the man giving thumbs up without any text, ready for safe captioning.\"\n}",
+  "mitigation_parsed": {
+    "hate_source": "The text at the bottom uses a racial slur (\"honky\") to create a hateful meme targeting white people.",
+    "hate_location": "TEXT_ONLY",
+    "severity": "SURGICAL_TEXT",
+    "original_text": "it's a great day\nto be a honky!",
+    "replacement_text": "it's a great day\nto be alive!",
+    "strategy": "The mitigation strategy involves completely removing the text overlays from the image to sanitize the visual content. The diffusion model is instructed to repaint the text areas with the underlying background and clothing textures to restore the image to its original, text-free state.",
+    "flux_prompt": "Remove the text overlays from the image. Repaint the top area to seamlessly continue the ceiling structure and the bottom area to match the purple fabric of the man's shirt. Preserve the original photograph of the man giving two thumbs up, his facial expression, the background corridor, and the lighting exactly.",
+    "expected_change": "The output will be the clean, original photograph of the man giving thumbs up without any text, ready for safe captioning."
+  },
+  "status": "mitigated",
+  "mitigated_image_path": "../../data/mitigated/01467_mitigated.png"
+}

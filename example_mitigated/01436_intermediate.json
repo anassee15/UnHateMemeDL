@@ -1,0 +1,22 @@
+{
+  "image_path": "../../data/01436.png",
+  "hateful_detection_raw": "{\n  \"description\": \"The text contains a slur ('tard') directed at a person with autism and frames a school shooting scenario involving an autistic child as a punchline, which constitutes hate speech based on disability.\",\n  \"classification\": \"hateful\",\n  \"probability\": 1.0\n}",
+  "hateful_detection_parsed": {
+    "is_hateful": true,
+    "probability": 1.0,
+    "description": "The text contains a slur ('tard') directed at a person with autism and frames a school shooting scenario involving an autistic child as a punchline, which constitutes hate speech based on disability."
+  },
+  "diffusion_prompt_raw": "{\n  \"hate_source\": \"The text creates hate by combining a violent crime scenario with the ableist slur 'tard' and mocking autism.\",\n  \"hate_location\": \"TEXT_ONLY\",\n  \"severity\": \"SURGICAL_TEXT\",\n  \"original_text\": \"when the school shooter\\naccidently shoots the autistic kid\\nbut doesn't know that the tard\\nstrength makes him impervious to\\nbullets\",\n  \"replacement_text\": \"when the villain fires his laser\\nbut doesn't know that the plot armor\\nmakes him impervious to bullets\",\n  \"strategy\": \"Remove the hateful text overlays and replace them with neutral text that maintains the meme's structure of an unexpected, invincible outcome, preserving the red-eyed tree frog and background.\",\n  \"flux_prompt\": \"Remove the white text overlays. The diffusion model should only handle visual changes and never speak about text change in this part. Preserve the red-eyed tree frog, the pink flower, the green background, and the image composition exactly.\",\n  \"expected_change\": \"The output image will be the clean, original photo of the red-eyed tree frog without any text, ready for the neutral replacement text to be overlaid.\"\n}",
+  "mitigation_parsed": {
+    "hate_source": "The text creates hate by combining a violent crime scenario with the ableist slur 'tard' and mocking autism.",
+    "hate_location": "TEXT_ONLY",
+    "severity": "SURGICAL_TEXT",
+    "original_text": "when the school shooter\naccidently shoots the autistic kid\nbut doesn't know that the tard\nstrength makes him impervious to\nbullets",
+    "replacement_text": "when the villain fires his laser\nbut doesn't know that the plot armor\nmakes him impervious to bullets",
+    "strategy": "Remove the hateful text overlays and replace them with neutral text that maintains the meme's structure of an unexpected, invincible outcome, preserving the red-eyed tree frog and background.",
+    "flux_prompt": "Remove the white text overlays. The diffusion model should only handle visual changes and never speak about text change in this part. Preserve the red-eyed tree frog, the pink flower, the green background, and the image composition exactly.",
+    "expected_change": "The output image will be the clean, original photo of the red-eyed tree frog without any text, ready for the neutral replacement text to be overlaid."
+  },
+  "status": "mitigated",
+  "mitigated_image_path": "../../data/mitigated/01436_mitigated.png"
+}

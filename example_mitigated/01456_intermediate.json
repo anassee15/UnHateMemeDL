@@ -1,0 +1,22 @@
+{
+  "image_path": "../../data/01456.png",
+  "hateful_detection_raw": "{\n  \"description\": \"The meme juxtaposes Nazi officials with the text 'they see them rollin...' over an image of Holocaust victims (children in a concentration camp) captioned 'they hating...'. This format trivializes the Holocaust and mocks the victims' suffering for comedic effect, which constitutes dehumanizing speech and mocking hate crimes against protected groups.\",\n  \"classification\": \"hateful\",\n  \"probability\": 0.99\n}",
+  "hateful_detection_parsed": {
+    "is_hateful": true,
+    "probability": 0.99,
+    "description": "The meme juxtaposes Nazi officials with the text 'they see them rollin...' over an image of Holocaust victims (children in a concentration camp) captioned 'they hating...'. This format trivializes the Holocaust and mocks the victims' suffering for comedic effect, which constitutes dehumanizing speech and mocking hate crimes against protected groups."
+  },
+  "diffusion_prompt_raw": "{\n  \"hate_source\": \"The image juxtaposes Nazi officials (top) with Holocaust victims in concentration camp uniforms (bottom) to create a racist punchline implying Jewish suffering is merely 'envy' or 'hating' over a trivial matter.\",\n  \"hate_location\": \"INTERSECTIONAL\",\n  \"severity\": \"STRUCTURAL\",\n  \"original_text\": \"they see them rollin.....\\nthey hating...\",\n  \"replacement_text\": \"they see him winning.....\\nhe hating...\",\n  \"strategy\": \"Completely replace the historical hate imagery with benign, generic figures (generic men in vintage cars and generic men in striped work clothes) to remove the Nazi/Genocide references while keeping the meme layout and font style.\",\n  \"flux_prompt\": \"Replace the top panel image of Nazi officials in a car with a generic vintage black and white photo of men in a classic car, neutral expressions. Replace the bottom panel image of concentration camp prisoners with a generic vintage black and white photo of people wearing striped work clothes or prison uniforms, looking like generic prisoners. Ensure NO swastikas, NO hate symbols, and NO recognizable historical figures are present. Keep the visual style as grainy black and white vintage photography. Preserve the two-panel layout composition.\",\n  \"expected_change\": \"The output image will retain the two-panel meme structure but replace the hateful Nazi and Holocaust imagery with generic, non-specific vintage photos of men in cars and men in striped shirts, removing all historical hate context.\"\n}",
+  "mitigation_parsed": {
+    "hate_source": "The image juxtaposes Nazi officials (top) with Holocaust victims in concentration camp uniforms (bottom) to create a racist punchline implying Jewish suffering is merely 'envy' or 'hating' over a trivial matter.",
+    "hate_location": "INTERSECTIONAL",
+    "severity": "STRUCTURAL",
+    "original_text": "they see them rollin.....\nthey hating...",
+    "replacement_text": "they see him winning.....\nhe hating...",
+    "strategy": "Completely replace the historical hate imagery with benign, generic figures (generic men in vintage cars and generic men in striped work clothes) to remove the Nazi/Genocide references while keeping the meme layout and font style.",
+    "flux_prompt": "Replace the top panel image of Nazi officials in a car with a generic vintage black and white photo of men in a classic car, neutral expressions. Replace the bottom panel image of concentration camp prisoners with a generic vintage black and white photo of people wearing striped work clothes or prison uniforms, looking like generic prisoners. Ensure NO swastikas, NO hate symbols, and NO recognizable historical figures are present. Keep the visual style as grainy black and white vintage photography. Preserve the two-panel layout composition.",
+    "expected_change": "The output image will retain the two-panel meme structure but replace the hateful Nazi and Holocaust imagery with generic, non-specific vintage photos of men in cars and men in striped shirts, removing all historical hate context."
+  },
+  "status": "mitigated",
+  "mitigated_image_path": "../../data/mitigated/01456_mitigated.png"
+}

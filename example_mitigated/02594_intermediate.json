@@ -1,0 +1,22 @@
+{
+  "image_path": "../../data/02594.png",
+  "hateful_detection_raw": "{\n  \"description\": \"The meme combines a name that is associated with a specific ethnicity, an image of a goat, and text about being pregnant to imply that the person is an animal or behaving like one. This constitutes dehumanizing speech based on ethnicity, which fits the definition of hate speech.\",\n  \"classification\": \"hateful\",\n  \"probability\": 1.0\n}",
+  "hateful_detection_parsed": {
+    "is_hateful": true,
+    "probability": 1.0,
+    "description": "The meme combines a name that is associated with a specific ethnicity, an image of a goat, and text about being pregnant to imply that the person is an animal or behaving like one. This constitutes dehumanizing speech based on ethnicity, which fits the definition of hate speech."
+  },
+  "diffusion_prompt_raw": "{\n  \"hate_source\": \"The meme relies on an ethnic slur (referencing the name 'Jamal') to deliver a joke about an unwanted phone call or surprise.\",\n  \"hate_location\": \"TEXT_ONLY\",\n  \"severity\": \"SURGICAL_TEXT\",\n  \"original_text\": \"jamal!\\nim pregnant!!!\",\n  \"replacement_text\": \"BOSS!\\nraise!!!\",\n  \"strategy\": \"Remove the racialized name in the top text and the pregnancy punchline in the bottom text. Replace with a neutral workplace humor variation that maintains the 'shocking notification' structure of the meme template.\",\n  \"flux_prompt\": \"Remove the text overlays from the image. Restore the white background area in the top panel and the grassy green field in the bottom panel where the text was previously located. Preserve the smartphone with the green calling icon in the top panel and the brown goat with the halter in the bottom panel exactly as they are.\",\n  \"expected_change\": \"The output image will contain the original meme visuals (phone and goat) without any text, ready for new safe text to be burned in or displayed separately.\"\n}",
+  "mitigation_parsed": {
+    "hate_source": "The meme relies on an ethnic slur (referencing the name 'Jamal') to deliver a joke about an unwanted phone call or surprise.",
+    "hate_location": "TEXT_ONLY",
+    "severity": "SURGICAL_TEXT",
+    "original_text": "jamal!\nim pregnant!!!",
+    "replacement_text": "BOSS!\nraise!!!",
+    "strategy": "Remove the racialized name in the top text and the pregnancy punchline in the bottom text. Replace with a neutral workplace humor variation that maintains the 'shocking notification' structure of the meme template.",
+    "flux_prompt": "Remove the text overlays from the image. Restore the white background area in the top panel and the grassy green field in the bottom panel where the text was previously located. Preserve the smartphone with the green calling icon in the top panel and the brown goat with the halter in the bottom panel exactly as they are.",
+    "expected_change": "The output image will contain the original meme visuals (phone and goat) without any text, ready for new safe text to be burned in or displayed separately."
+  },
+  "status": "mitigated",
+  "mitigated_image_path": "../../data/mitigated/02594_mitigated.png"
+}

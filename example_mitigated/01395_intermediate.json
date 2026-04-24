@@ -1,0 +1,22 @@
+{
+  "image_path": "../../data/01395.png",
+  "hateful_detection_raw": "{\n  \"description\": \"The meme uses text to dehumanize Mexican people by comparing them to food, which attacks based on ethnicity and nationality.\",\n  \"classification\": \"hateful\",\n  \"probability\": 1\n}",
+  "hateful_detection_parsed": {
+    "is_hateful": true,
+    "probability": 1.0,
+    "description": "The meme uses text to dehumanize Mexican people by comparing them to food, which attacks based on ethnicity and nationality."
+  },
+  "diffusion_prompt_raw": "{\n  \"hate_source\": \"The text overlay creates a dehumanizing racial microaggression by equating Mexican babies with food.\",\n  \"hate_location\": \"TEXT_ONLY\",\n  \"severity\": \"SURGICAL_TEXT\",\n  \"original_text\": \"i just found out mexican babies come out just like the food\",\n  \"replacement_text\": \"i just found out babies come out\\nin the movies just like in real life\",\n  \"strategy\": \"Remove the hateful text overlay and replace it with a neutral, self-referential joke that plays on the absurdity of the delivery (expecting reality to match movie depictions), while preserving the image and format.\",\n  \"flux_prompt\": \"Remove the existing text overlay at the top of the image and replace it with the text 'i just found out babies come out in the movies just like in real life'. Use the same white Impact font with black outline. Keep the original image of the woman in the hospital bed and the man holding her hand completely intact, preserving their expressions, lighting, and composition.\",\n  \"expected_change\": \"The image will remain visually the same, but the top text will be updated to a neutral observation about movie tropes rather than a racial stereotype.\"\n}",
+  "mitigation_parsed": {
+    "hate_source": "The text overlay creates a dehumanizing racial microaggression by equating Mexican babies with food.",
+    "hate_location": "TEXT_ONLY",
+    "severity": "SURGICAL_TEXT",
+    "original_text": "i just found out mexican babies come out just like the food",
+    "replacement_text": "i just found out babies come out\nin the movies just like in real life",
+    "strategy": "Remove the hateful text overlay and replace it with a neutral, self-referential joke that plays on the absurdity of the delivery (expecting reality to match movie depictions), while preserving the image and format.",
+    "flux_prompt": "Remove the existing text overlay at the top of the image and replace it with the text 'i just found out babies come out in the movies just like in real life'. Use the same white Impact font with black outline. Keep the original image of the woman in the hospital bed and the man holding her hand completely intact, preserving their expressions, lighting, and composition.",
+    "expected_change": "The image will remain visually the same, but the top text will be updated to a neutral observation about movie tropes rather than a racial stereotype."
+  },
+  "status": "mitigated",
+  "mitigated_image_path": "../../data/mitigated/01395_mitigated.png"
+}

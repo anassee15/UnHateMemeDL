@@ -1,0 +1,22 @@
+{
+  "image_path": "../../data/01364.png",
+  "hateful_detection_raw": "{\n  \"description\": \"The image depicts children role-playing as combatants in a violent conflict, likely related to the Israeli-Palestinian conflict. The text subverts the context of the image, which appears to be a nativity play, by claiming this is a violent 'last play'. This juxtaposition implies that the religious group associated with the nativity (Christians) is violent or that their children are being indoctrinated into violence, which constitutes a hateful generalization and attack based on religion.\",\n  \"classification\": \"hateful\",\n  \"probability\": 0.9\n}",
+  "hateful_detection_parsed": {
+    "is_hateful": true,
+    "probability": 0.9,
+    "description": "The image depicts children role-playing as combatants in a violent conflict, likely related to the Israeli-Palestinian conflict. The text subverts the context of the image, which appears to be a nativity play, by claiming this is a violent 'last play'. This juxtaposition implies that the religious group associated with the nativity (Christians) is violent or that their children are being indoctrinated into violence, which constitutes a hateful generalization and attack based on religion."
+  },
+  "diffusion_prompt_raw": "{\n  \"hate_source\": \"The image depicts children participating in a roleplay involving suicide vests, which serves as dehumanizing propaganda by associating the religious or ethnic group with terrorism and child soldiers.\",\n  \"hate_location\": \"INTERSECTIONAL\",\n  \"severity\": \"SURGICAL_BOTH\",\n  \"original_text\": \"and that was the last nativity play my son was invited to take part in\",\n  \"replacement_text\": \"and that was the last sci-fi play my son was invited to take part in\",\n  \"strategy\": \"Replace the terrorist suicide vests with science fiction prop equipment (jetpacks and utility belts) to shift the theme from terrorism to a harmless sci-fi cosplay play, while changing the caption to reflect this innocent context.\",\n  \"flux_prompt\": \"Replace the black suicide vests and fake explosives on the children's chests with bulky, colorful, cartoonish sci-fi jetpacks and utility belts made of cardboard and plastic. The children should be wearing sci-fi costumes and headbands with green alien or space logos instead of terrorist bandanas. Keep the outdoor daylight setting, the number of children, and the composition of the group hug/interaction exactly the same.\",\n  \"expected_change\": \"The image will show a group of children in a sci-fi costume play, wearing prop jetpacks instead of bomb vests, with a caption referring to a sci-fi play.\"\n}",
+  "mitigation_parsed": {
+    "hate_source": "The image depicts children participating in a roleplay involving suicide vests, which serves as dehumanizing propaganda by associating the religious or ethnic group with terrorism and child soldiers.",
+    "hate_location": "INTERSECTIONAL",
+    "severity": "SURGICAL_BOTH",
+    "original_text": "and that was the last nativity play my son was invited to take part in",
+    "replacement_text": "and that was the last sci-fi play my son was invited to take part in",
+    "strategy": "Replace the terrorist suicide vests with science fiction prop equipment (jetpacks and utility belts) to shift the theme from terrorism to a harmless sci-fi cosplay play, while changing the caption to reflect this innocent context.",
+    "flux_prompt": "Replace the black suicide vests and fake explosives on the children's chests with bulky, colorful, cartoonish sci-fi jetpacks and utility belts made of cardboard and plastic. The children should be wearing sci-fi costumes and headbands with green alien or space logos instead of terrorist bandanas. Keep the outdoor daylight setting, the number of children, and the composition of the group hug/interaction exactly the same.",
+    "expected_change": "The image will show a group of children in a sci-fi costume play, wearing prop jetpacks instead of bomb vests, with a caption referring to a sci-fi play."
+  },
+  "status": "mitigated",
+  "mitigated_image_path": "../../data/mitigated/01364_mitigated.png"
+}
