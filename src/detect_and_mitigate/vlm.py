@@ -4,7 +4,7 @@ from PIL import Image
 import torch
 from transformers import AutoProcessor, AutoModelForImageTextToText
 
-from utils import HATEFUL_DETECTION_PROMPT, TYPE_OF_HATE_PROMPT, SOURCE_OF_HATE_PROMPT, TEXT_MITIGATION_PROMPT
+from prompt import HATEFUL_DETECTION_PROMPT, TYPE_OF_HATE_PROMPT, SOURCE_OF_HATE_PROMPT, GET_DIFFUSION_SYSTEM_PROMPT, GET_DIFFUSION_USER_PROMPT
 
 
 def instantiate_vlm(model_name: str, cache_dir: str | None = None) -> AutoModelForImageTextToText:
@@ -27,16 +27,23 @@ def instantiate_vlm(model_name: str, cache_dir: str | None = None) -> AutoModelF
     )
     return model, processor
 
-def run_vlm(model, processor, image_path, prompt, thinking=False, max_new_tokens=512, temperature=0.2):
-    messages = [
+
+@torch.inference_mode()
+def run_vlm(model, processor, image_path, prompt, thinking=False, max_new_tokens=512, temperature=0.2, system_prompt=""):
+    messages = []
+
+    if system_prompt:
+        messages.append({"role": "system", "content": system_prompt})
+
+
+    messages.append(
         {
             "role": "user",
             "content": [
                 {"type": "image"},
                 {"type": "text", "text": prompt},
             ],
-        }
-    ]
+        })
 
     text = processor.apply_chat_template(
         messages,
@@ -72,5 +79,5 @@ def detect_hate_type(model, processor, image_path, thinking=False, max_new_token
     return run_vlm(model, processor, image_path, TYPE_OF_HATE_PROMPT, thinking, max_new_tokens, temperature)
 
 
-def mitigate_hateful_text(model, processor, image_path, thinking=False, max_new_tokens=512, temperature=0.95):
-    return run_vlm(model, processor, image_path, TEXT_MITIGATION_PROMPT, thinking, max_new_tokens, temperature)
+def get_diffusion_prompt(model, processor, image_path, thinking=False, max_new_tokens=512, temperature=0.95):
+    return run_vlm(model, processor, image_path, GET_DIFFUSION_USER_PROMPT, thinking, max_new_tokens, temperature, system_prompt=GET_DIFFUSION_SYSTEM_PROMPT)
