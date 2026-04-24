@@ -1,4 +1,4 @@
-# Vlm prompt
+# VLM prompt
 HATEFUL_DEFINITION = (
     "Hatefulness definition: Hate speech is defined as a direct or indirect attack on people based "
     "on characteristics, including ethnicity, race, nationality, immigration status, religion, caste, sex, "
@@ -15,10 +15,14 @@ HATEFUL_DETECTION_PROMPT = (
     "but together convey a hateful message. Conversely, if neither the image nor the text is hateful and "
     "they do not together create a hateful meaning, the meme is not considered hateful.\n\n"
     "You consider visual and textual meanings to classify the meme as hateful or non-hateful based on "
-    "the hatefulness definition and classification criteria. After giving a **short explanation**, in the explanation focus on the hateful elements of the meme, provide the "
-    "answer with either hateful or non-hateful in the following format:\n"
-    "Classification:\n"
-    "Probability of the meme being hateful (from 0 to 1):"
+    "the hatefulness definition and classification criteria. Return ONLY valid JSON with no extra text, markdown, or code fences.\n\n"
+    "Required JSON schema:\n"
+    "{\n"
+    "  \"description\": \"<short explanation focused on hateful elements>\",\n"
+    "  \"classification\": \"hateful | non-hateful\",\n"
+    "  \"probability\": <number from 0 to 1>\n"
+    "}\n\n"
+    "Rules: description must be concise, classification must be exactly 'hateful' or 'non-hateful', and probability must be a numeric value in [0, 1]."
 )
 
 
@@ -43,11 +47,11 @@ SOURCE_OF_HATE_PROMPT = (
 
 
 GET_DIFFUSION_SYSTEM_PROMPT = (
-    "You are an expert image content moderator and prompt engineer specialized in diffusion models, specifically FLUX.2 Klein, "
+    "You are an expert image content moderator and prompt engineer specialized in diffusion models, specifically FLUX Klein, "
     "with deep expertise in meme culture and internet visual language.\n\n"
     "Your role is a two-stage pipeline:\n"
     "1. ANALYZE the input image (which may be a meme) and identify hateful content — visual, textual, or the combination of both\n"
-    "2. OUTPUT a mitigation prompt for FLUX.2 Klein img2img that surgically removes hateful content\n\n"
+    "2. OUTPUT a mitigation prompt for FLUX Klein img2img that surgically removes hateful content\n\n"
     "You must follow these strict rules:\n"
     "- Identify the EXACT source of hate: visual elements, text overlays, or the combination of image+text that creates hate "
     "(a neutral image + hateful caption = hate meme)\n"
@@ -66,7 +70,7 @@ GET_DIFFUSION_SYSTEM_PROMPT = (
 GET_DIFFUSION_USER_PROMPT = (
     "You are given an image — potentially a meme — that has been flagged as containing hateful content.\n\n"
     "## Your Task\n\n"
-    "Analyze the image carefully and produce a FLUX.2 Klein img2img editing prompt that mitigates the hateful content, "
+    "Analyze the image carefully and produce a diffusion model (FLUX Klein) img2img editing prompt that mitigates the hateful content, "
     "handling both visual and textual elements.\n\n"
     "## Step-by-step reasoning (think before outputting):\n\n"
     "<think>\n"
@@ -86,19 +90,17 @@ GET_DIFFUSION_USER_PROMPT = (
     "3. CLASSIFY severity:\n"
     "   - SURGICAL_TEXT: only the text needs changing, image is fine\n"
     "   - SURGICAL_VISUAL: only a visual element needs changing, text is fine\n"
-    "   - SURGICAL_BOTH: small targeted changes to both text and visual\n"
+    "   - SURGICAL_BOTH: small targeted changes to both text and visual (give a replacement text different from the original in that case)\n"
     "   - STRUCTURAL: the entire concept must be transformed\n\n"
     "4. DETERMINE mitigation strategy:\n"
     "   - For TEXT: craft replacement text that preserves the joke format/punchline (represents the difference between top and bottom text localisation with a newline, maximum one new line)\n"
     "     but redirects the target to something neutral (e.g., a universal frustration,\n"
-    "     a self-referential tech/internet joke, an absurdist alternative)\n"
-    "   - For VISUAL: replace/remove the hateful element with a neutral equivalent\n"
+    "     a self-referential tech/internet joke, an absurdist alternative) but by keeping the meaning the same\n"
+    "   - For VISUAL: replace/remove the hateful element with a neutral equivalent non-hatefull but without changing the overall composition \n"
     "   - For COMBINED: address text first (as it often drives the hate), then visual\n\n"
     "5. DRAFT the FLUX prompt using plain natural language — it must be ready to pass\n"
     "   directly to pipe(prompt=...) with no extra parsing:\n"
-    "   - For text changes: 'Remove the top text overlay and repaint the area to match\n"
-    "     the background. Repaint the bottom text area with the phrase [X] in bold white\n"
-    "     Impact font with black outline, same size and position as the original.'\n"
+    "   - For text changes: 'Never speak about text change in this part, the diffusion model should only handle visual changes'\n"
     "   - For visual changes: 'Replace [hateful element] with [neutral equivalent],\n"
     "     preserve all other visual elements including composition, lighting, and colors.'\n"
     "   - Always anchor preserved elements explicitly in the prompt\n"
@@ -117,7 +119,7 @@ GET_DIFFUSION_USER_PROMPT = (
     '  "original_text": "<verbatim text visible in the image, or null>",\n'
     '  "replacement_text": "<neutral replacement text preserving humor structure (represents the difference between top and bottom text with a newline, maximum one new line), or null>",\n'
     '  "strategy": "<one sentence: what changes and what is preserved>",\n'
-    '  "flux_prompt": "<plain natural language diffusion prompt>",\n'
+    '  "flux_prompt": "<plain natural language diffusion prompt, never speak about text change in this part, the diffusion model should only handle visual changes>",\n'
     '  "expected_change": "<one sentence: what the output will look like vs. input>"\n'
     "}\n\n"
     "## Examples of valid flux_prompt values:\n\n"

@@ -3,14 +3,39 @@ import json
 
 
 def parse_hateful_response(response):
-    splitted_response = response.strip().replace("\n", " ").split("Classification:")
-    description = splitted_response[0].strip()
-    classification = splitted_response[1].split("Probability of the meme being hateful (from 0 to 1):")[0].strip().lower()
-    probability_str = splitted_response[1].split("Probability of the meme being hateful (from 0 to 1):")[1].strip().rstrip("%").replace(",", ".")
+    if not isinstance(response, str):
+        raise TypeError("response must be a string")
+
+    raw = response.strip()
+    if not raw:
+        raise ValueError("Empty hateful detection response")
+
+    # Support optional markdown code fences around JSON.
+    raw = re.sub(r"^```(?:json)?\s*", "", raw, flags=re.IGNORECASE)
+    raw = re.sub(r"\s*```$", "", raw)
+
     try:
-        probability = float(probability_str)
-    except ValueError:
-        raise ValueError(f"Could not parse probability value: '{probability_str}'")
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"Invalid JSON in hateful detection response: {e}")
+
+    if not isinstance(parsed, dict):
+        raise ValueError("Expected a JSON object")
+
+    description = str(parsed.get("description", "")).strip()
+    classification = str(parsed.get("classification", "")).strip().lower()
+    probability_raw = parsed.get("probability")
+
+    if classification not in {"hateful", "non-hateful"}:
+        raise ValueError(f"Invalid classification value: '{classification}'")
+
+    if probability_raw is None:
+        raise ValueError("Missing 'probability' field")
+
+    try:
+        probability = float(probability_raw)
+    except (TypeError, ValueError):
+        raise ValueError(f"Could not parse probability value: '{probability_raw}'")
 
     is_hateful = classification == "hateful"
     return is_hateful, probability, description
@@ -109,4 +134,3 @@ def _fallback(prompt: str, reason: str) -> dict:
         "flux_prompt": prompt, "expected_change": "Image unchanged due to parse error",
         "_parse_error": reason,
     }
-

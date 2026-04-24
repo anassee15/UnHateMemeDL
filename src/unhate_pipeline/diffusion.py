@@ -1,4 +1,3 @@
-import os
 import sys
 import torch
 from PIL import Image
@@ -97,8 +96,15 @@ def handle_text_mitigation(
     print(f"[info] Writing replacement text: '{replacement_text}'...")
     positions = detect_text_position(mitigation, image.size)
 
-    # Split replacement into top/bottom if it contains a newline.
-    lines = [l.strip() for l in replacement_text.split("\n") if l.strip()]
+    # Split only on the first newline; collapse any remaining newlines in the second chunk.
+    normalized_replacement = replacement_text.strip()
+    if "\n" in normalized_replacement:
+        first_line, remainder = normalized_replacement.split("\n", 1)
+        remainder = remainder.replace("\n", "")
+        lines = [part.strip() for part in (first_line, remainder) if part.strip()]
+    else:
+        lines = [normalized_replacement] if normalized_replacement else []
+
     img_w, img_h = image.size
     top_pos = positions.get("top", (img_w // 2, max(20, int(img_h * 0.06))))
     bottom_pos = positions.get("bottom", (img_w // 2, img_h - max(20, int(img_h * 0.06))))
@@ -117,13 +123,13 @@ def handle_text_mitigation(
 def mitigate_image(pipe, image: Image.Image, mitigation: dict, generator=None) -> Image.Image:
     hate_loc = mitigation["hate_location"]
 
-    # A: Handle text mitigation (Remove/replace hateful text) if needed
-    if hate_loc in ("TEXT_ONLY", "COMBINED", "INTERSECTIONAL") and mitigation.get("replacement_text"):
-        image = handle_text_mitigation(pipe, image, mitigation, generator=generator)
-
-    # B: Handle visual mitigation with diffusion model (if needed)
+    # A: Handle visual mitigation with diffusion model (if needed)
     if hate_loc in ("VISUAL_ONLY", "COMBINED", "INTERSECTIONAL", "STRUCTURAL"):
         print(f"[info] Mitigating visual elements...")
         image = run_diffusion(pipe, image, mitigation["flux_prompt"], generator=generator)
+
+    # B: Handle text mitigation (Remove/replace hateful text) if needed
+    if hate_loc in ("TEXT_ONLY", "COMBINED", "INTERSECTIONAL") and mitigation.get("replacement_text"):
+        image = handle_text_mitigation(pipe, image, mitigation, generator=generator)
 
     return image

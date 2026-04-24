@@ -1,5 +1,4 @@
 import sys
-import random
 import argparse
 
 import torch
@@ -7,14 +6,24 @@ from pathlib import Path
 from diffusers.utils import load_image
 
 from diffusion import instantiate_diffusion, mitigate_image
-from utils import parse_prompt_generation
-from vlm import instantiate_vlm, get_diffusion_prompt
+from utils import parse_prompt_generation, parse_hateful_response
+from vlm import instantiate_vlm, get_diffusion_prompt, detect_hateful_meme
 
 
 def run_pipeline(vlm, vlm_processor, diffusion_model, image_path):
     # load image
     image = load_image(str(image_path))
-    generator = torch.Generator(device="cuda" if torch.cuda.is_available() else "cpu").manual_seed(42) 
+    mitigated_dir = image_path.parent / "mitigated"
+
+    hateful_response = detect_hateful_meme(vlm, vlm_processor, image_path)
+    print(f"\nHateful detection output:\n{hateful_response}\n")
+    is_hateful, probability, description = parse_hateful_response(hateful_response)
+
+    if probability < 0.2:
+        print("The meme is not hateful.")
+        mitigated_output_path = mitigated_dir / f"{image_path.stem}_mitigated.png"
+        image.save(mitigated_output_path)
+        return
 
     # generate prompt for diffusion model
     print(f"[info] Generating prompt for diffusion model...", file=sys.stderr)
@@ -23,8 +32,9 @@ def run_pipeline(vlm, vlm_processor, diffusion_model, image_path):
     mitigation = parse_prompt_generation(diffusion_prompt)
 
     # mitigate image using diffusion model
+    generator = torch.Generator(device="cuda" if torch.cuda.is_available() else "cpu").manual_seed(42) 
     mitigated_image = mitigate_image(diffusion_model, image, mitigation, generator=generator)
-    mitigated_image.save(image_path.parent / f"{image_path.stem}_mitigated.png")
+    mitigated_image.save(mitigated_dir / f"{image_path.stem}_mitigated.png")
 
 
 def main():
