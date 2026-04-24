@@ -9,6 +9,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     g++ \
     git \
+    git-lfs \
     curl \
     wget \
     python3.11 \
@@ -24,3 +25,4 @@ COPY requirements.txt .
 
 RUN pip install -r requirements.txt
 RUN pip install git+https://github.com/huggingface/diffusers.git
+RUN pip install -U xformers --index-url https://download.pytorch.org/whl/cu130

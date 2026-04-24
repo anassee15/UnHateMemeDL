@@ -1,3 +1,5 @@
+# VLM PROMPTS AND RESPONSE PARSERS
+
 HATEFUL_DEFINITION = (
     "Hatefulness definition: Hate speech is defined as a direct or indirect attack on people based "
     "on characteristics, including ethnicity, race, nationality, immigration status, religion, caste, sex, "
@@ -48,15 +50,17 @@ TEXT_MITIGATION_PROMPT = (
 
 
 def parse_hateful_response(response):
-    classification = response.strip().replace("\n", " ").split("Classification:")[1].split("Probability of the meme being hateful")[0].strip().lower()
-    probability_str = response.strip().replace("\n", " ").split("Probability of the meme being hateful (from 0 to 1):")[1].strip().rstrip("%").replace(",", ".")
+    splitted_response = response.strip().replace("\n", " ").split("Classification:")
+    description = splitted_response[0].strip()
+    classification = splitted_response[1].split("Probability of the meme being hateful (from 0 to 1):")[0].strip().lower()
+    probability_str = splitted_response[1].split("Probability of the meme being hateful (from 0 to 1):")[1].strip().rstrip("%").replace(",", ".")
     try:
         probability = float(probability_str)
     except ValueError:
         raise ValueError(f"Could not parse probability value: '{probability_str}'")
 
     is_hateful = classification == "hateful"
-    return is_hateful, probability
+    return is_hateful, probability, description
 
 
 def parse_hate_type_response(response):
@@ -74,3 +78,13 @@ def parse_hate_source_response(response):
         return "hate from both"
     else:
         raise ValueError("Response format is incorrect. Expected 'hate from image', 'hate from text', or 'hate from both'.")
+    
+
+# DIFFUSION PROMPTS
+REMOVE_TEXT_PROMPT = "Remove the text '{text_to_remove}' from the image while keeping the rest of the image as intact as possible."
+
+ADD_TEXT_PROMPT = "Add the text '{new_text}' to the image while keeping the rest of the image as intact as possible. Try to make the new text blend in with the image style and content as much as possible (like a meme caption)."
+
+REPLACE_TEXT_PROMPT = "Replace the text '{old_text}' with the text '{new_text}' in the image while keeping the rest of the image as intact as possible. Keep the new text style and position similar to the old text."
+
+UNHATE_IMAGE_PROMPT = "Remove the hateful elements from the image while keeping the rest of the image as intact as possible. The hateful elements in the image are related to {details_of_hate}."

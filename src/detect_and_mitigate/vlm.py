@@ -1,8 +1,33 @@
+import sys
 from PIL import Image
+
+import torch
+from transformers import AutoProcessor, AutoModelForImageTextToText
+
 from utils import HATEFUL_DETECTION_PROMPT, TYPE_OF_HATE_PROMPT, SOURCE_OF_HATE_PROMPT, TEXT_MITIGATION_PROMPT
 
 
-def run_inference_image(model, processor, image_path, prompt, thinking=False, max_new_tokens=512, temperature=0.2):
+def instantiate_vlm(model_name: str, cache_dir: str | None = None) -> AutoModelForImageTextToText:
+    dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
+    print(f"[info] Using dtype: {dtype}", file=sys.stderr)
+    print("[info] Loading processor...", file=sys.stderr)
+
+    processor = AutoProcessor.from_pretrained(
+        model_name,
+        cache_dir=cache_dir,
+        trust_remote_code=True,
+    )
+    print("[info] Loading model...", file=sys.stderr)
+    model = AutoModelForImageTextToText.from_pretrained(
+        model_name,
+        cache_dir=cache_dir,
+        trust_remote_code=True,
+        dtype=dtype,
+        device_map="auto",
+    )
+    return model, processor
+
+def run_vlm(model, processor, image_path, prompt, thinking=False, max_new_tokens=512, temperature=0.2):
     messages = [
         {
             "role": "user",
@@ -36,16 +61,16 @@ def run_inference_image(model, processor, image_path, prompt, thinking=False, ma
 
 
 def detect_hateful_meme(model, processor, image_path, thinking=False, max_new_tokens=512, temperature=0.95):
-    return run_inference_image(model, processor, image_path, HATEFUL_DETECTION_PROMPT, thinking, max_new_tokens, temperature)
+    return run_vlm(model, processor, image_path, HATEFUL_DETECTION_PROMPT, thinking, max_new_tokens, temperature)
 
 
 def detect_hate_modality(model, processor, image_path, thinking=False, max_new_tokens=512, temperature=0.95):
-    return run_inference_image(model, processor, image_path, SOURCE_OF_HATE_PROMPT, thinking, max_new_tokens, temperature)
+    return run_vlm(model, processor, image_path, SOURCE_OF_HATE_PROMPT, thinking, max_new_tokens, temperature)
 
 
 def detect_hate_type(model, processor, image_path, thinking=False, max_new_tokens=512, temperature=0.95):
-    return run_inference_image(model, processor, image_path, TYPE_OF_HATE_PROMPT, thinking, max_new_tokens, temperature)
+    return run_vlm(model, processor, image_path, TYPE_OF_HATE_PROMPT, thinking, max_new_tokens, temperature)
 
 
 def mitigate_hateful_text(model, processor, image_path, thinking=False, max_new_tokens=512, temperature=0.95):
-    return run_inference_image(model, processor, image_path, TEXT_MITIGATION_PROMPT, thinking, max_new_tokens, temperature)
+    return run_vlm(model, processor, image_path, TEXT_MITIGATION_PROMPT, thinking, max_new_tokens, temperature)

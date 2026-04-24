@@ -12,3 +12,4 @@ datasets
 huggingface_hub
 flash-linear-attention
 requests
+torchao
