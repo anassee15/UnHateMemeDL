@@ -74,9 +74,61 @@ logger = logging.getLogger(__name__)
 # Dataset
 # ---------------------------------------------------------------------------
 
+def load_jsonl(path: str) -> list[dict]:
+    with open(path) as f:
+        return [json.loads(line) for line in f if line.strip()]
+
+
+def build_train_val_split(
+    train_jsonl: str,
+    dev_jsonl: str,
+    exclude_jsonl: str | None,
+    val_ratio: float = 0.1,
+    seed: int = 42,
+) -> tuple[list[dict], list[dict]]:
+    """
+    Builds train and val lists from the hateful-meme dataset.
+
+    Strategy:
+    - Load train.jsonl (all labeled) + dev.jsonl minus any IDs in exclude_jsonl.
+    - Shuffle and split 90/10 for internal train/val.
+    - exclude_jsonl (eval_490_balanced.jsonl) is never included — it is the
+      sacred held-out test set used only for final evaluation.
+    """
+    exclude_ids: set = set()
+    if exclude_jsonl:
+        for item in load_jsonl(exclude_jsonl):
+            exclude_ids.add(item["id"])
+
+    pool: list[dict] = []
+
+    for item in load_jsonl(train_jsonl):
+        if item.get("label") is not None and item["id"] not in exclude_ids:
+            pool.append(item)
+
+    for item in load_jsonl(dev_jsonl):
+        if item.get("label") is not None and item["id"] not in exclude_ids:
+            pool.append(item)
+
+    rng = random.Random(seed)
+    rng.shuffle(pool)
+    split = int(len(pool) * (1 - val_ratio))
+    train_data, val_data = pool[:split], pool[split:]
+
+    label_count = lambda data: {  # noqa: E731
+        k: sum(1 for x in data if x["label"] == k) for k in (0, 1)
+    }
+    logger.info(f"Train: {len(train_data)} examples {label_count(train_data)}")
+    logger.info(f"Val  : {len(val_data)} examples {label_count(val_data)}")
+    if exclude_ids:
+        logger.info(f"Excluded {len(exclude_ids)} eval IDs (eval_490_balanced) from both splits")
+
+    return train_data, val_data
+
+
 class HatefulMemeDataset(Dataset):
     """
-    Wraps the Hateful Memes Challenge JSONL format into SFT chat examples.
+    Wraps a list of hateful-meme records into SFT chat examples.
 
     Each example is a single-turn conversation:
         user:      [image] + HATEFUL_DETECTION_PROMPT
@@ -85,29 +137,20 @@ class HatefulMemeDataset(Dataset):
     No system prompt — matches the inference call in vlm.detect_hateful_meme.
     """
 
-    def __init__(self, jsonl_path: str, img_dir: str, balance: bool = False):
+    def __init__(self, data: list[dict], img_dir: str, balance: bool = False):
         self.img_dir = Path(img_dir)
-        raw = []
-        with open(jsonl_path) as f:
-            for line in f:
-                item = json.loads(line.strip())
-                if item.get("label") is not None:
-                    raw.append(item)
 
         if balance:
-            hateful = [x for x in raw if x["label"] == 1]
-            non_hateful = [x for x in raw if x["label"] == 0]
+            hateful = [x for x in data if x["label"] == 1]
+            non_hateful = [x for x in data if x["label"] == 0]
             n = min(len(hateful), len(non_hateful))
             random.shuffle(hateful)
             random.shuffle(non_hateful)
-            raw = hateful[:n] + non_hateful[:n]
-            random.shuffle(raw)
-            logger.info(f"Balanced: {n} hateful + {n} non-hateful = {len(raw)} total")
+            data = hateful[:n] + non_hateful[:n]
+            random.shuffle(data)
+            logger.info(f"Balanced: {n} hateful + {n} non-hateful = {len(data)} total")
 
-        self.data = raw
-        label_counts = {0: sum(1 for x in raw if x["label"] == 0),
-                        1: sum(1 for x in raw if x["label"] == 1)}
-        logger.info(f"Loaded {len(self.data)} examples | {label_counts}")
+        self.data = data
 
     def __len__(self):
         return len(self.data)
@@ -360,11 +403,18 @@ def evaluate_f1(model, processor, val_dataset, max_new_tokens: int = 64,
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_name", default="google/gemma-4-31b-it")
-    parser.add_argument("--train_jsonl", required=True)
-    parser.add_argument("--val_jsonl", required=True)
+    parser.add_argument("--train_jsonl", required=True,
+                        help="Path to train.jsonl (hateful-meme format).")
+    parser.add_argument("--dev_jsonl", required=True,
+                        help="Path to dev.jsonl. IDs in --exclude_jsonl are removed.")
+    parser.add_argument("--exclude_jsonl", default=None,
+                        help="JSONL whose IDs are excluded from train+dev "
+                             "(i.e. eval_490_balanced.jsonl). These form the sacred test set.")
     parser.add_argument("--img_dir", required=True)
     parser.add_argument("--output_dir", required=True)
     parser.add_argument("--cache_dir", default=None)
+    parser.add_argument("--val_ratio", type=float, default=0.1,
+                        help="Fraction of (train+dev minus exclude) held out for val.")
     parser.add_argument("--lora_r", type=int, default=16,
                         help="LoRA rank. r=16 is a good default; r=32 gives more "
                              "capacity at ~2x adapter size. Hu et al. (2022).")
@@ -379,9 +429,11 @@ def main():
     parser.add_argument("--grad_accum", type=int, default=16,
                         help="Effective batch = batch_size * grad_accum.")
     parser.add_argument("--max_length", type=int, default=768)
+    parser.add_argument("--max_train_samples", type=int, default=None,
+                        help="Cap the training set size (e.g. 2000 for fast debug runs). "
+                             "None = use all available data.")
     parser.add_argument("--balance", action="store_true",
-                        help="Undersample majority class to 50/50. "
-                             "Hateful Memes train is ~40%% hateful.")
+                        help="Undersample majority class to 50/50.")
     parser.add_argument("--skip_final_eval", action="store_true",
                         help="Skip post-training generative F1 eval.")
     parser.add_argument("--seed", type=int, default=42)
@@ -443,8 +495,19 @@ def main():
     model.print_trainable_parameters()
 
     # --- Datasets ---
-    train_ds = HatefulMemeDataset(args.train_jsonl, args.img_dir, balance=args.balance)
-    val_ds = HatefulMemeDataset(args.val_jsonl, args.img_dir, balance=False)
+    # Use all labeled data (train + dev minus eval IDs), split 90/10 internally.
+    train_data, val_data = build_train_val_split(
+        train_jsonl=args.train_jsonl,
+        dev_jsonl=args.dev_jsonl,
+        exclude_jsonl=args.exclude_jsonl,
+        val_ratio=args.val_ratio,
+        seed=args.seed,
+    )
+    if args.max_train_samples and args.max_train_samples < len(train_data):
+        train_data = train_data[:args.max_train_samples]
+        logger.info(f"Capped training set to {len(train_data)} examples (--max_train_samples)")
+    train_ds = HatefulMemeDataset(train_data, args.img_dir, balance=args.balance)
+    val_ds = HatefulMemeDataset(val_data, args.img_dir, balance=False)
 
     # --- Trainer ---
     training_args = TrainingArguments(
