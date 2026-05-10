@@ -39,16 +39,22 @@ def run_pipeline(vlm, vlm_processor, diffusion_model, image_path):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--vlm_name", required=False, default="Qwen/Qwen3.6-27B")
+    parser.add_argument("--vlm_name", required=False, default="google/gemma-4-31b-it")
     parser.add_argument("--diffusion_model_name", required=False, default="black-forest-labs/FLUX.2-klein-9B")
     parser.add_argument("--data_path", required=False, default="data/")
     parser.add_argument("--cache_dir", default=None)
+    parser.add_argument("--adapter_path", default=None,
+                        help="Path to a fine-tuned LoRA adapter directory "
+                             "(e.g. checkpoints/detect/adapter_detect). "
+                             "If omitted, the base model is used as-is.")
     args = parser.parse_args()
 
     print(f"[info] Starting inference with model: {args.vlm_name}", file=sys.stderr)
+    if args.adapter_path:
+        print(f"[info] Using LoRA adapter: {args.adapter_path}", file=sys.stderr)
     print(f"[info] Data path: {args.data_path}", file=sys.stderr)
 
-    vlm, vlm_processor = instantiate_vlm(args.vlm_name, args.cache_dir)
+    vlm, vlm_processor = instantiate_vlm(args.vlm_name, args.cache_dir, args.adapter_path)
     print(f"[info] Model loaded on device: {vlm.device}", file=sys.stderr)
 
     print(f"[info] Loading diffusion model: {args.diffusion_model_name}", file=sys.stderr)

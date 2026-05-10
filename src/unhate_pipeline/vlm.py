@@ -2,29 +2,64 @@ import sys
 from PIL import Image
 
 import torch
-from transformers import AutoProcessor, AutoModelForImageTextToText
+from transformers import AutoProcessor, AutoModelForImageTextToText, BitsAndBytesConfig
 
 from prompt import HATEFUL_DETECTION_PROMPT, TYPE_OF_HATE_PROMPT, SOURCE_OF_HATE_PROMPT, GET_DIFFUSION_SYSTEM_PROMPT, GET_DIFFUSION_USER_PROMPT
 
 
-def instantiate_vlm(model_name: str, cache_dir: str | None = None) -> AutoModelForImageTextToText:
-    dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
-    print(f"[info] Using dtype: {dtype}", file=sys.stderr)
-    print("[info] Loading processor...", file=sys.stderr)
+def instantiate_vlm(
+    model_name: str,
+    cache_dir: str | None = None,
+    adapter_path: str | None = None,
+) -> tuple:
+    """
+    Load a VLM, optionally with a fine-tuned LoRA adapter.
 
+    If adapter_path is given, the base model is loaded in 4-bit NF4 (same
+    quantisation used during QLoRA training) and the adapter weights are
+    applied on top via PEFT.  This is equivalent to the training setup and
+    ensures the adapter and the base model are numerically compatible.
+
+    If adapter_path is None, the model is loaded in bfloat16 (original behaviour).
+    """
+    print("[info] Loading processor...", file=sys.stderr)
     processor = AutoProcessor.from_pretrained(
         model_name,
         cache_dir=cache_dir,
         trust_remote_code=True,
     )
-    print("[info] Loading model...", file=sys.stderr)
-    model = AutoModelForImageTextToText.from_pretrained(
-        model_name,
-        cache_dir=cache_dir,
-        trust_remote_code=True,
-        dtype=dtype,
-        device_map="auto",
-    )
+
+    if adapter_path is not None:
+        from peft import PeftModel
+        print(f"[info] Loading base model in 4-bit NF4 for adapter inference...", file=sys.stderr)
+        bnb_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=torch.bfloat16,
+            bnb_4bit_use_double_quant=True,
+        )
+        model = AutoModelForImageTextToText.from_pretrained(
+            model_name,
+            cache_dir=cache_dir,
+            trust_remote_code=True,
+            quantization_config=bnb_config,
+            device_map="auto",
+        )
+        print(f"[info] Loading LoRA adapter from {adapter_path}...", file=sys.stderr)
+        model = PeftModel.from_pretrained(model, adapter_path)
+        model.eval()
+    else:
+        dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
+        print(f"[info] Using dtype: {dtype}", file=sys.stderr)
+        print("[info] Loading model...", file=sys.stderr)
+        model = AutoModelForImageTextToText.from_pretrained(
+            model_name,
+            cache_dir=cache_dir,
+            trust_remote_code=True,
+            torch_dtype=dtype,
+            device_map="auto",
+        )
+
     return model, processor
 
 
