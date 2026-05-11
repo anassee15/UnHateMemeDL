@@ -26,3 +26,6 @@ COPY requirements.txt .
 RUN pip install -r requirements.txt
 RUN pip install git+https://github.com/huggingface/diffusers.git
 RUN pip install -U xformers --index-url https://download.pytorch.org/whl/cu130
+RUN pip install matplotlib
+RUN pip install scikit-learn
+RUN pip install git+https://github.com/huggingface/transformers.git

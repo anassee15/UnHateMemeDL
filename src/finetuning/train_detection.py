@@ -54,7 +54,7 @@ from torch.utils.data import Dataset
 from sklearn.metrics import f1_score, roc_auc_score, classification_report, confusion_matrix, ConfusionMatrixDisplay
 from transformers import (
     AutoProcessor,
-    AutoModelForImageTextToText,
+    AutoModelForMultimodalLM,
     BitsAndBytesConfig,
     TrainingArguments,
     Trainer,
@@ -66,13 +66,10 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "unhate_pipeline"))
 from prompt import HATEFUL_DETECTION_PROMPT
 from utils import parse_hateful_response
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
 # Dataset
-# ---------------------------------------------------------------------------
 
 def load_jsonl(path: str) -> list[dict]:
     with open(path) as f:
@@ -177,9 +174,7 @@ class HatefulMemeDataset(Dataset):
         return {"messages": messages, "image": image, "label": item["label"]}
 
 
-# ---------------------------------------------------------------------------
 # Collator — builds input_ids + labels with proper loss masking
-# ---------------------------------------------------------------------------
 
 def collate_fn(batch, processor, max_length: int):
     """
@@ -223,7 +218,8 @@ def collate_fn(batch, processor, max_length: int):
         prefix_lengths.append(enc["input_ids"].shape[1])
 
     labels = full_inputs["input_ids"].clone()
-    pad_id = processor.tokenizer.pad_token_id
+    tok = processor.tokenizer if hasattr(processor, "tokenizer") else processor
+    pad_id = tok.pad_token_id
     for i, prefix_len in enumerate(prefix_lengths):
         labels[i, :prefix_len] = -100
     if pad_id is not None:
@@ -233,34 +229,43 @@ def collate_fn(batch, processor, max_length: int):
     return full_inputs
 
 
-# ---------------------------------------------------------------------------
 # LoRA helpers
-# ---------------------------------------------------------------------------
 
-VISION_KEYWORDS = ("vision", "visual", "patch_embed", "image_tower", "img_encoder")
+VISION_KEYWORDS = ("vision", "visual", "patch_embed", "image_tower", "img_encoder",
+                   "siglip", "clip", "vit", "multi_modal_projector")
 
 
 def find_lm_linear_names(model) -> list[str]:
     """
-    Returns the names of all Linear layers in the language-model trunk.
+    Returns full dotted paths of all Linear layers in the language-model trunk.
     Vision encoder layers are excluded (frozen, not quantised to NF4).
+
+    Uses full paths (not leaf names) so that PEFT targets exactly these modules
+    and cannot accidentally match same-named layers in the vision encoder
+    (e.g. Gemma4ClippableLinear wrappers that share leaf names like q_proj).
 
     Design rationale: adapting only the LM trunk is sufficient for cross-modal
     reasoning tasks — see LLaVA-1.5 (Liu et al., 2023) which shows that
     instruction-tuning the LLM while freezing CLIP achieves SOTA on 11 benchmarks.
     """
-    names = set()
+    try:
+        from bitsandbytes.nn import Linear4bit
+        _linear_types = (torch.nn.Linear, Linear4bit)
+    except ImportError:
+        _linear_types = (torch.nn.Linear,)
+
+    names = []
     for name, module in model.named_modules():
         if any(kw in name for kw in VISION_KEYWORDS):
             continue
-        if isinstance(module, torch.nn.Linear) and len(name.split(".")[-1]) > 2:
-            names.add(name.split(".")[-1])
-    return list(names)
+        if not isinstance(module, _linear_types):
+            continue
+        if len(name.split(".")[-1]) > 2:
+            names.append(name)
+    return names
 
 
-# ---------------------------------------------------------------------------
 # Callback: save metrics CSV + plot training curves after each eval
-# ---------------------------------------------------------------------------
 
 class MetricsLogger(TrainerCallback):
     """Appends eval metrics to a CSV and re-plots training curves after each eval."""
@@ -315,9 +320,7 @@ class MetricsLogger(TrainerCallback):
         plt.close(fig)
 
 
-# ---------------------------------------------------------------------------
 # Post-training generative evaluation: F1 + AUROC + plots
-# ---------------------------------------------------------------------------
 
 @torch.inference_mode()
 def evaluate_f1(model, processor, val_dataset, max_new_tokens: int = 64,
@@ -396,13 +399,11 @@ def evaluate_f1(model, processor, val_dataset, max_new_tokens: int = 64,
     return f1, auroc
 
 
-# ---------------------------------------------------------------------------
 # Main
-# ---------------------------------------------------------------------------
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model_name", default="google/gemma-4-31b-it")
+    parser.add_argument("--model_name", default="google/gemma-4-31B-it")
     parser.add_argument("--train_jsonl", required=True,
                         help="Path to train.jsonl (hateful-meme format).")
     parser.add_argument("--dev_jsonl", required=True,
@@ -452,8 +453,9 @@ def main():
     processor = AutoProcessor.from_pretrained(
         args.model_name, cache_dir=args.cache_dir, trust_remote_code=True
     )
-    if processor.tokenizer.pad_token is None:
-        processor.tokenizer.pad_token = processor.tokenizer.eos_token
+    tok = processor.tokenizer if hasattr(processor, "tokenizer") else processor
+    if tok.pad_token is None:
+        tok.pad_token = tok.eos_token
 
     # --- 4-bit model (QLoRA) ---
     # NF4 is the information-theoretically optimal 4-bit dtype for normally
@@ -467,7 +469,7 @@ def main():
         bnb_4bit_compute_dtype=torch.bfloat16,
         bnb_4bit_use_double_quant=True,
     )
-    model = AutoModelForImageTextToText.from_pretrained(
+    model = AutoModelForMultimodalLM.from_pretrained(
         args.model_name,
         cache_dir=args.cache_dir,
         trust_remote_code=True,
