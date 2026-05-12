@@ -223,10 +223,15 @@ class VLMWithClassificationHead(nn.Module):
         super().__init__()
         self.vlm = vlm
 
-        # Small head: one linear layer, bfloat16 to match VLM activations
+        # Small head: one linear layer, bfloat16 to match VLM activations.
+        # Both weight and bias are zero-initialized so that the initial logit is
+        # exactly 0 → sigmoid(0) = 0.5 → BCE loss = log(2) ≈ 0.693, regardless
+        # of hidden state magnitude. trunc_normal would produce large initial
+        # logits (std ≈ 5 for hidden_dim=7168) and a loss of 5-8, meaning the
+        # head starts confidently wrong and wastes early training steps recovering.
         self.classifier = nn.Linear(hidden_dim, 1, dtype=torch.bfloat16)
+        nn.init.zeros_(self.classifier.weight)
         nn.init.zeros_(self.classifier.bias)
-        nn.init.trunc_normal_(self.classifier.weight, std=0.02)
 
     def forward(
         self,
