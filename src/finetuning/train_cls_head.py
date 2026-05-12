@@ -271,7 +271,35 @@ class VLMWithClassificationHead(nn.Module):
         return SequenceClassifierOutput(loss=loss, logits=logits)
 
 
-#  Callback: CSV logging + training curves 
+#  Callback: save best head only
+
+class BestHeadSaver(TrainerCallback):
+    """
+    Saves only the classifier head (28 KB) whenever val F1 improves.
+
+    Why not use Trainer's built-in save_strategy?
+    Trainer would try to save the full frozen VLM (~62 GB) at each checkpoint,
+    which hits two problems: prohibitive disk usage and a safetensors error on
+    tied weights (embed_tokens / lm_head share the same tensor in Gemma 4).
+    Since the VLM is frozen, checkpointing it is pointless — only the head changes.
+    """
+
+    def __init__(self, model: "VLMWithClassificationHead", output_dir: Path):
+        self.model = model
+        self.best_path = output_dir / "best_classifier.pt"
+        self.best_f1 = -1.0
+
+    def on_evaluate(self, _args, state, _control, metrics=None, **_kwargs):
+        if not state.is_world_process_zero or metrics is None:
+            return
+        f1 = metrics.get("eval_f1", -1.0)
+        if f1 > self.best_f1:
+            self.best_f1 = f1
+            torch.save(self.model.classifier.state_dict(), self.best_path)
+            logger.info(f"New best F1={f1:.4f} — head saved to {self.best_path}")
+
+
+#  Callback: CSV logging + training curves
 
 class MetricsLogger(TrainerCallback):
     """Appends eval metrics to a CSV and re-plots training curves after each eval."""
@@ -441,8 +469,8 @@ def main():
     parser.add_argument("--val_ratio", type=float, default=0.1)
     parser.add_argument("--learning_rate", type=float, default=1e-3,
                         help="Head-only training uses a higher LR than LoRA (1e-3 to 1e-4).")
-    parser.add_argument("--num_epochs", type=int, default=5,
-                        help="More epochs are safe: only the tiny head is updated.")
+    parser.add_argument("--num_epochs", type=int, default=4,
+                        help="A linear head on frozen features converges in 1-3 epochs.")
     parser.add_argument("--batch_size", type=int, default=4,
                         help="Larger than LoRA is possible — no VLM gradients stored.")
     parser.add_argument("--grad_accum", type=int, default=4,
@@ -534,21 +562,23 @@ def main():
         lr_scheduler_type="cosine",
         warmup_ratio=0.05,
         bf16=True,
-        gradient_checkpointing=False,   # VLM is frozen — no checkpointing needed
+        gradient_checkpointing=False,
         eval_strategy="steps",
         eval_steps=100,
-        save_strategy="steps",
-        save_steps=100,
-        save_total_limit=3,
-        load_best_model_at_end=True,
-        metric_for_best_model="f1",     # maximise F1, not loss
-        greater_is_better=True,
+        eval_on_start=True,
+        # Never save full model checkpoints: the frozen VLM is 62 GB and has
+        # tied weights (embed_tokens / lm_head) that safetensors rejects.
+        # BestHeadSaver below saves only the 28 KB classifier on each F1 improvement.
+        save_strategy="no",
+        load_best_model_at_end=False,
         logging_steps=10,
         report_to="none",
         remove_unused_columns=False,
         dataloader_num_workers=0,
         seed=args.seed,
     )
+
+    best_head_saver = BestHeadSaver(model, output_dir)
 
     trainer = Trainer(
         model=model,
@@ -557,23 +587,30 @@ def main():
         eval_dataset=val_ds,
         data_collator=collate,
         compute_metrics=compute_metrics,
-        callbacks=[MetricsLogger(output_dir)],
+        callbacks=[MetricsLogger(output_dir), best_head_saver],
     )
 
     logger.info("Starting classification head training...")
     trainer.train()
 
-    #  Save head weights + processor 
-    # Only the head is saved — the base VLM is unchanged and reloaded from HF.
+    #  Save artefacts
+    # best_classifier.pt — best val-F1 head (written by BestHeadSaver during training)
+    # classifier_final.pt — head weights at the last training step
+    # processor/          — tokenizer + image processor for inference
     head_path = output_dir / "cls_head"
     head_path.mkdir(exist_ok=True)
-    torch.save(model.classifier.state_dict(), head_path / "classifier.pt")
+    torch.save(model.classifier.state_dict(), head_path / "classifier_final.pt")
     processor.save_pretrained(str(head_path))
-    logger.info(f"Classification head saved to {head_path}")
+    logger.info(
+        f"Best head  (F1={best_head_saver.best_f1:.4f}): {output_dir / 'best_classifier.pt'}"
+    )
+    logger.info(f"Final head : {head_path / 'classifier_final.pt'}")
 
-    #  Post-training evaluation 
+    #  Post-training evaluation
     if not args.skip_final_eval:
-        logger.info("Running post-training evaluation (F1 / AUROC)...")
+        logger.info("Running post-training evaluation on best head (F1 / AUROC)...")
+        best_state = torch.load(output_dir / "best_classifier.pt", weights_only=True)
+        model.classifier.load_state_dict(best_state)
         evaluate_final(model, val_ds, collate, output_dir=output_dir)
 
 
