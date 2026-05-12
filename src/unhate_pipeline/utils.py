@@ -29,15 +29,18 @@ def parse_hateful_response(response):
     if classification not in {"hateful", "non-hateful"}:
         raise ValueError(f"Invalid classification value: '{classification}'")
 
-    if probability_raw is None:
-        raise ValueError("Missing 'probability' field")
-
-    try:
-        probability = float(probability_raw)
-    except (TypeError, ValueError):
-        raise ValueError(f"Could not parse probability value: '{probability_raw}'")
-
     is_hateful = classification == "hateful"
+
+    if probability_raw is None:
+        # Fine-tuned models trained without probability in the target schema will
+        # omit this field. Fall back to the hard binary value from classification.
+        probability = 1.0 if is_hateful else 0.0
+    else:
+        try:
+            probability = float(probability_raw)
+        except (TypeError, ValueError):
+            raise ValueError(f"Could not parse probability value: '{probability_raw}'")
+
     return is_hateful, probability, description
 
 

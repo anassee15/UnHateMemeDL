@@ -25,6 +25,25 @@ HATEFUL_DETECTION_PROMPT = (
     "Rules: description must be concise, classification must be exactly 'hateful' or 'non-hateful', and probability must be a numeric value in [0, 1]."
 )
 
+# Simplified prompt for SFT fine-tuning: only asks for the binary classification
+# label. Probability is excluded because training targets are always exactly 0 or 1
+# (the binary label), which would teach the model a degenerate distribution rather
+# than a calibrated confidence score.
+HATEFUL_DETECTION_PROMPT_FT = (
+    HATEFUL_DEFINITION + "\n\n"
+    "Classification criteria: A meme is considered hateful if either the image or text is hateful on its own. "
+    "The meme is also hateful if both the image and text are not hateful individually, "
+    "but together convey a hateful message. Conversely, if neither the image nor the text is hateful and "
+    "they do not together create a hateful meaning, the meme is not considered hateful.\n\n"
+    "You consider visual and textual meanings to classify the meme as hateful or non-hateful based on "
+    "the hatefulness definition and classification criteria. Return ONLY valid JSON with no extra text, markdown, or code fences.\n\n"
+    "Required JSON schema:\n"
+    "{\n"
+    "  \"classification\": \"hateful | non-hateful\"\n"
+    "}\n\n"
+    "Rules: classification must be exactly 'hateful' or 'non-hateful'."
+)
+
 
 TYPE_OF_HATE_PROMPT = (
     HATEFUL_DEFINITION + "\n\n"

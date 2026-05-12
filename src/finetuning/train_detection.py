@@ -1,12 +1,13 @@
 """
-QLoRA fine-tuning script — Bloc 1: Hateful Meme Detection.
+LoRA fine-tuning script — Bloc 1: Hateful Meme Detection.
 
 Architecture & design choices
 ──────────────────────────────
-- 4-bit NF4 quantisation (QLoRA): loads a ~27B VLM in ≈14-17 GB VRAM instead of
-  ≈54 GB, leaving headroom for activations and image tokens on a single A100 80 GB.
-  Ref: Dettmers et al. (2023) "QLoRA: Efficient Finetuning of Quantized LLMs"
-       https://arxiv.org/abs/2305.14314
+- Full-precision LoRA (bfloat16): loads the model weights in bfloat16, keeping
+  all computation in native precision. Requires more VRAM than QLoRA but avoids
+  quantisation noise and is faster per step.
+  Ref: Hu et al. (2022) "LoRA: Low-Rank Adaptation of Large Language Models"
+       https://arxiv.org/abs/2106.09685
 
 - LoRA applied to the language model only (vision encoder frozen): the visual
   encoder already produces rich multimodal features; the detection bottleneck is
@@ -55,18 +56,25 @@ from sklearn.metrics import f1_score, roc_auc_score, classification_report, conf
 from transformers import (
     AutoProcessor,
     AutoModelForMultimodalLM,
-    BitsAndBytesConfig,
     TrainingArguments,
     Trainer,
     TrainerCallback,
 )
-from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
+from peft import LoraConfig, get_peft_model
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "unhate_pipeline"))
-from prompt import HATEFUL_DETECTION_PROMPT
+from prompt import HATEFUL_DETECTION_PROMPT_FT
 from utils import parse_hateful_response
 
 logger = logging.getLogger(__name__)
+
+# Fixed CSV columns — covers all fields emitted by Trainer's on_log callbacks.
+# Using a predefined set (with extrasaction='ignore') avoids the broken-CSV bug
+# that arises when training rows and eval rows have different key sets.
+_CSV_FIELDNAMES = [
+    "step", "epoch", "loss", "learning_rate", "grad_norm",
+    "eval_loss", "eval_runtime", "eval_samples_per_second", "eval_steps_per_second",
+]
 
 
 # Dataset
@@ -155,7 +163,6 @@ class HatefulMemeDataset(Dataset):
     def __getitem__(self, idx):
         item = self.data[idx]
         label_str = "hateful" if item["label"] == 1 else "non-hateful"
-        probability = 1.0 if item["label"] == 1 else 0.0
         image = Image.open(self.img_dir / item["img"]).convert("RGB")
 
         messages = [
@@ -163,12 +170,12 @@ class HatefulMemeDataset(Dataset):
                 "role": "user",
                 "content": [
                     {"type": "image"},
-                    {"type": "text", "text": HATEFUL_DETECTION_PROMPT},
+                    {"type": "text", "text": HATEFUL_DETECTION_PROMPT_FT},
                 ],
             },
             {
                 "role": "assistant",
-                "content": json.dumps({"classification": label_str, "probability": probability}),
+                "content": json.dumps({"classification": label_str}),
             },
         ]
         return {"messages": messages, "image": image, "label": item["label"]}
@@ -238,7 +245,7 @@ VISION_KEYWORDS = ("vision", "visual", "patch_embed", "image_tower", "img_encode
 def find_lm_linear_names(model) -> list[str]:
     """
     Returns full dotted paths of all Linear layers in the language-model trunk.
-    Vision encoder layers are excluded (frozen, not quantised to NF4).
+    Vision encoder layers are excluded (frozen).
 
     Uses full paths (not leaf names) so that PEFT targets exactly these modules
     and cannot accidentally match same-named layers in the vision encoder
@@ -248,17 +255,11 @@ def find_lm_linear_names(model) -> list[str]:
     reasoning tasks — see LLaVA-1.5 (Liu et al., 2023) which shows that
     instruction-tuning the LLM while freezing CLIP achieves SOTA on 11 benchmarks.
     """
-    try:
-        from bitsandbytes.nn import Linear4bit
-        _linear_types = (torch.nn.Linear, Linear4bit)
-    except ImportError:
-        _linear_types = (torch.nn.Linear,)
-
     names = []
     for name, module in model.named_modules():
         if any(kw in name for kw in VISION_KEYWORDS):
             continue
-        if not isinstance(module, _linear_types):
+        if not isinstance(module, torch.nn.Linear):
             continue
         if len(name.split(".")[-1]) > 2:
             names.append(name)
@@ -281,7 +282,9 @@ class MetricsLogger(TrainerCallback):
         row = {"step": state.global_step,
                **{k: v for k, v in logs.items() if isinstance(v, (int, float))}}
         with open(self.csv_path, "a", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=row.keys())
+            writer = csv.DictWriter(
+                f, fieldnames=_CSV_FIELDNAMES, extrasaction="ignore", restval=""
+            )
             if not self._header_written:
                 writer.writeheader()
                 self._header_written = True
@@ -312,7 +315,7 @@ class MetricsLogger(TrainerCallback):
             ax.plot(ex, ey, label="Val loss", marker="o", linewidth=2)
         ax.set_xlabel("Training step")
         ax.set_ylabel("Cross-entropy loss (SFT)")
-        ax.set_title("Detection adapter — QLoRA training curves")
+        ax.set_title("Detection adapter — LoRA training curves")
         ax.legend()
         ax.grid(alpha=0.3)
         fig.tight_layout()
@@ -424,7 +427,7 @@ def main():
                              "Keeping alpha=2*r is a common heuristic.")
     parser.add_argument("--lora_dropout", type=float, default=0.05)
     parser.add_argument("--learning_rate", type=float, default=2e-4,
-                        help="QLoRA typically uses 1e-4 to 3e-4.")
+                        help="LoRA typically uses 1e-4 to 2e-4.")
     parser.add_argument("--num_epochs", type=int, default=3)
     parser.add_argument("--batch_size", type=int, default=1)
     parser.add_argument("--grad_accum", type=int, default=16,
@@ -457,31 +460,23 @@ def main():
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token
 
-    # --- 4-bit model (QLoRA) ---
-    # NF4 is the information-theoretically optimal 4-bit dtype for normally
-    # distributed weights. Double quantisation further reduces the memory
-    # footprint of quantisation constants by ~0.37 bits/param.
-    # (Dettmers et al., 2023 — QLoRA)
-    logger.info("Loading model in 4-bit NF4 (QLoRA)...")
-    bnb_config = BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_quant_type="nf4",
-        bnb_4bit_compute_dtype=torch.bfloat16,
-        bnb_4bit_use_double_quant=True,
-    )
+    # --- Model (LoRA, bfloat16) ---
+    logger.info("Loading model in bfloat16 (LoRA)...")
     model = AutoModelForMultimodalLM.from_pretrained(
         args.model_name,
         cache_dir=args.cache_dir,
         trust_remote_code=True,
-        quantization_config=bnb_config,
+        torch_dtype=torch.bfloat16,
         device_map="auto",
     )
     model.config.use_cache = False  # required for gradient checkpointing
-    model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=True)
+    # enable_input_require_grads is needed so that gradient checkpointing works
+    # with LoRA: the frozen base model inputs must allow grad flow through adapters.
+    model.enable_input_require_grads()
 
     # --- LoRA ---
-    # r=16 introduces ~0.5% trainable parameters. Hu et al. (2022) show that
-    # low-rank adapters with r=4-16 match full fine-tuning on most NLP tasks.
+    # r=16 introduces ~0.5% trainable parameters in bfloat16. Hu et al. (2022)
+    # show that low-rank adapters with r=4-16 match full fine-tuning on most NLP tasks.
     target_modules = find_lm_linear_names(model)
     logger.info(f"LoRA target modules ({len(target_modules)}): {target_modules}")
 
@@ -550,7 +545,7 @@ def main():
     logger.info("Starting SFT training...")
     trainer.train()
 
-    # --- Save LoRA adapter only (not the full 4-bit base) ---
+    # --- Save LoRA adapter only (not the full base model weights) ---
     adapter_path = output_dir / "adapter_detect"
     model.save_pretrained(str(adapter_path))
     processor.save_pretrained(str(adapter_path))
