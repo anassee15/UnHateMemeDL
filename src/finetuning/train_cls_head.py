@@ -167,7 +167,9 @@ def collate_fn(batch, processor, max_length: int):
     The model does a forward pass and the head reads the last token hidden state,
     so generation is never involved.
     """
-    images = [item["image"] for item in batch]
+    # Gemma 4 processor expects List[List[Image]] — one inner list per text example.
+    # A flat List[Image] is interpreted as one example with N images, not N examples.
+    images = [[item["image"]] for item in batch]
     labels = torch.tensor([item["label"] for item in batch], dtype=torch.float)
 
     # One identical prompt per example — only the image differs
@@ -454,11 +456,6 @@ def main():
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s  %(levelname)s  %(name)s  %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    )
     random.seed(args.seed)
     torch.manual_seed(args.seed)
     output_dir = Path(args.output_dir)

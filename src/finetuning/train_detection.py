@@ -193,7 +193,9 @@ def collate_fn(batch, processor, max_length: int):
 
     This implements the SFT objective from Ouyang et al. (2022).
     """
-    images = [item["image"] for item in batch]
+    # Gemma 4 processor expects List[List[Image]] — one inner list per text example.
+    # A flat List[Image] is interpreted as one example with N images, not N examples.
+    images = [[item["image"]] for item in batch]
     messages_list = [item["messages"] for item in batch]
 
     full_texts, prefix_texts = [], []
@@ -221,7 +223,7 @@ def collate_fn(batch, processor, max_length: int):
     # Compute exact prefix lengths (including image tokens) per example
     prefix_lengths = []
     for text, image in zip(prefix_texts, images):
-        enc = processor(text=[text], images=[image], return_tensors="pt", padding=False)
+        enc = processor(text=[text], images=image, return_tensors="pt", padding=False)
         prefix_lengths.append(enc["input_ids"].shape[1])
 
     labels = full_inputs["input_ids"].clone()

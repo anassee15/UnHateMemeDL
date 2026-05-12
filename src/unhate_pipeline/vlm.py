@@ -105,7 +105,7 @@ def detect_hateful_meme_cls_head(
         messages, tokenize=False, add_generation_prompt=True
     )
     image = Image.open(image_path).convert("RGB")
-    inputs = processor(text=[text], images=[image], return_tensors="pt")
+    inputs = processor(text=[text], images=[[image]], return_tensors="pt")
     inputs = {k: v.to(model.device) if hasattr(v, "to") else v
               for k, v in inputs.items()}
 
@@ -150,7 +150,7 @@ def run_vlm(model, processor, image_path, prompt, thinking=False, max_new_tokens
         enable_thinking=thinking,
     )
     image = Image.open(image_path).convert("RGB")
-    inputs = processor(text=[text], images=[image], return_tensors="pt")
+    inputs = processor(text=[text], images=[[image]], return_tensors="pt")
     inputs = {k: v.to(model.device) if hasattr(v, "to") else v for k, v in inputs.items()}
 
     generated = model.generate(
