@@ -36,15 +36,6 @@ import argparse
 import csv
 from pathlib import Path
 
-import numpy as np
-from sklearn.metrics import (
-    roc_auc_score,
-    f1_score,
-    accuracy_score,
-    classification_report,
-    confusion_matrix,
-)
-
 # Make pipeline modules importable
 sys.path.insert(0, str(Path(__file__).parent.parent / "unhate_pipeline"))
 
@@ -227,16 +218,12 @@ def main():
     parser.add_argument("--output",    default="report/detection_predictions.csv")
     parser.add_argument("--vlm_name",  default="Qwen/Qwen3.6-27B")
     parser.add_argument("--cache_dir", default=None)
-    parser.add_argument("--metrics_only",      action="store_true", help="Skip inference, only compute metrics from existing CSV")
     parser.add_argument("--modality_analysis", action="store_true", help="Run detect_hate_type on hateful images for per-modality F1")
     args = parser.parse_args()
 
-    if not args.metrics_only:
-        if not args.img_dir:
-            parser.error("--img_dir is required unless --metrics_only is set")
-        run_inference(args)
-
-    compute_metrics(args)
+    if not args.img_dir:
+        parser.error("--img_dir is required")
+    run_inference(args)
 
 
 if __name__ == "__main__":
