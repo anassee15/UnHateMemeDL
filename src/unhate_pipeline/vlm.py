@@ -9,7 +9,7 @@ from transformers import AutoProcessor, AutoModelForImageTextToText
 from prompt import (
     HATEFUL_DETECTION_PROMPT, HATEFUL_DETECTION_PROMPT_FT,
     TYPE_OF_HATE_PROMPT, SOURCE_OF_HATE_PROMPT,
-    GET_DIFFUSION_SYSTEM_PROMPT, GET_DIFFUSION_USER_PROMPT,
+    build_diffusion_prompt,
 )
 
 
@@ -17,13 +17,21 @@ def instantiate_vlm(
     model_name: str,
     cache_dir: str | None = None,
     adapter_path: str | None = None,
+    mitigation_adapter_path: str | None = None,
 ) -> tuple:
     """
-    Load a VLM in bfloat16, optionally with a fine-tuned LoRA adapter.
+    Load a VLM in bfloat16, optionally with one or two fine-tuned LoRA adapters.
 
-    adapter_path: directory produced by train_detection.py (contains
-                  adapter_config.json + adapter weights).  The base model is
-                  loaded in bfloat16 — consistent with LoRA training.
+    adapter_path: detection LoRA adapter (from train_detection.py). Loaded under
+                  the name 'detect' if both adapters are provided.
+    mitigation_adapter_path: mitigation LoRA adapter (from train_mitigation.py).
+                  Loaded under the name 'mitigate'. When provided, callers should
+                  activate it before generating diffusion prompts via
+                  `model.set_adapter('mitigate')` (handled by get_diffusion_prompt
+                  when `use_ft_prompt=True`).
+
+    If only one adapter is given, it is loaded as the single active adapter and
+    no name switching is required.
     """
     print("[info] Loading processor...", file=sys.stderr)
     processor = AutoProcessor.from_pretrained(
@@ -40,10 +48,23 @@ def instantiate_vlm(
         device_map="auto",
     )
 
-    if adapter_path is not None:
+    both = adapter_path is not None and mitigation_adapter_path is not None
+    if adapter_path is not None or mitigation_adapter_path is not None:
         from peft import PeftModel
-        print(f"[info] Loading LoRA adapter from {adapter_path}...", file=sys.stderr)
+
+    if both:
+        print(f"[info] Loading detection adapter from {adapter_path}...", file=sys.stderr)
+        model = PeftModel.from_pretrained(model, adapter_path, adapter_name="detect")
+        print(f"[info] Loading mitigation adapter from {mitigation_adapter_path}...", file=sys.stderr)
+        model.load_adapter(mitigation_adapter_path, adapter_name="mitigate")
+        # Default-active: detection. Switched on demand by get_diffusion_prompt.
+        model.set_adapter("detect")
+    elif adapter_path is not None:
+        print(f"[info] Loading detection adapter from {adapter_path}...", file=sys.stderr)
         model = PeftModel.from_pretrained(model, adapter_path)
+    elif mitigation_adapter_path is not None:
+        print(f"[info] Loading mitigation adapter from {mitigation_adapter_path}...", file=sys.stderr)
+        model = PeftModel.from_pretrained(model, mitigation_adapter_path)
 
     model.eval()
     return model, processor
@@ -177,5 +198,22 @@ def detect_hate_type(model, processor, image_path, thinking=False, max_new_token
     return run_vlm(model, processor, image_path, TYPE_OF_HATE_PROMPT, thinking, max_new_tokens, temperature)
 
 
-def get_diffusion_prompt(model, processor, image_path, thinking=False, max_new_tokens=512, temperature=0.95):
-    return run_vlm(model, processor, image_path, GET_DIFFUSION_USER_PROMPT, thinking, max_new_tokens, temperature, system_prompt=GET_DIFFUSION_SYSTEM_PROMPT)
+def get_diffusion_prompt(
+    model, processor, image_path,
+    thinking: bool = True, max_new_tokens: int = 512, temperature: float = 0.0,
+):
+    """
+    Generate the mitigation plan JSON using GET_DIFFUSION_PROMPT.
+
+    thinking: when True, includes the step-by-step CoT reasoning block in the
+    prompt. Activates the 'mitigate' PEFT adapter if it was loaded alongside
+    another adapter.
+    """
+    if hasattr(model, "peft_config") and "mitigate" in getattr(model, "peft_config", {}):
+        model.set_adapter("mitigate")
+    prompt = build_diffusion_prompt(thinking=thinking)
+    return run_vlm(
+        model, processor, image_path, prompt,
+        thinking=False, max_new_tokens=max_new_tokens, temperature=temperature,
+        system_prompt="",
+    )

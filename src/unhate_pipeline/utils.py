@@ -120,10 +120,16 @@ def parse_prompt_generation(raw: str, fallback_prompt: str = "Preserve the image
         except Exception as e:
             return _fallback(fallback_prompt, f"Parse error: {e}")
 
-    # 5. Validate flux_prompt is a clean plain string
-    flux = parsed.get("flux_prompt", "")
-    if not isinstance(flux, str) or len(flux.strip()) < 10 or flux.strip().startswith("{"):
-        return _fallback(fallback_prompt, f"Invalid flux_prompt: '{flux[:80]}'")
+    # 5. Validate diffusion_prompt is a clean plain string.
+    # Accept legacy `flux_prompt` key for backward compatibility with cached
+    # outputs from before the field rename — promote it to `diffusion_prompt`.
+    diff = parsed.get("diffusion_prompt")
+    if diff is None and "flux_prompt" in parsed:
+        diff = parsed["flux_prompt"]
+        parsed["diffusion_prompt"] = diff
+    if not isinstance(diff, str) or len(diff.strip()) < 10 or diff.strip().startswith("{"):
+        snippet = "" if not isinstance(diff, str) else diff[:80]
+        return _fallback(fallback_prompt, f"Invalid diffusion_prompt: '{snippet}'")
 
     return parsed
 
@@ -134,6 +140,6 @@ def _fallback(prompt: str, reason: str) -> dict:
         "hate_source": "parse_error", "hate_location": "VISUAL_ONLY",
         "severity": "STRUCTURAL", "original_text": None,
         "replacement_text": None, "strategy": "Fallback: no mitigation applied",
-        "flux_prompt": prompt, "expected_change": "Image unchanged due to parse error",
+        "diffusion_prompt": prompt, "expected_change": "Image unchanged due to parse error",
         "_parse_error": reason,
     }

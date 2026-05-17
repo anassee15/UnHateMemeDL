@@ -16,7 +16,8 @@ from vlm import (
 )
 
 
-def run_pipeline(vlm, vlm_processor, diffusion_model, image_path, cls_head=None):
+def run_pipeline(vlm, vlm_processor, diffusion_model, image_path, cls_head=None,
+                 thinking: bool = True):
     image = load_image(str(image_path))
     mitigated_dir = image_path.parent / "mitigated"
     mitigated_dir.mkdir(exist_ok=True)
@@ -52,7 +53,9 @@ def run_pipeline(vlm, vlm_processor, diffusion_model, image_path, cls_head=None)
     # The classification head is only for the binary detection decision;
     # generating a structured diffusion plan always requires generation.
     print("[info] Generating diffusion prompt...", file=sys.stderr)
-    diffusion_prompt = get_diffusion_prompt(vlm, vlm_processor, image_path)
+    diffusion_prompt = get_diffusion_prompt(
+        vlm, vlm_processor, image_path, thinking=thinking,
+    )
     print(f"\nGenerated diffusion prompt:\n{diffusion_prompt}\n")
     mitigation = parse_prompt_generation(diffusion_prompt)
 
@@ -78,6 +81,12 @@ def main():
                              "(e.g. checkpoints/cls_head/cls_head/classifier.pt). "
                              "When provided, detection uses a forward pass instead of "
                              "generation. Generation for the diffusion prompt is unaffected.")
+    parser.add_argument("--mitigation_adapter", default=None,
+                        help="LoRA adapter directory produced by train_mitigation.py "
+                             "(e.g. checkpoints/mitigation/adapter_mitigation).")
+    parser.add_argument("--no_thinking", action="store_true",
+                        help="Disable the step-by-step CoT reasoning block in the "
+                             "mitigation prompt. On by default.")
     args = parser.parse_args()
 
     if args.adapter_path and args.cls_head_path:
@@ -89,7 +98,8 @@ def main():
     print(f"[info] Data path: {args.data_path}", file=sys.stderr)
 
     vlm, vlm_processor = instantiate_vlm(
-        args.vlm_name, args.cache_dir, args.adapter_path
+        args.vlm_name, args.cache_dir, args.adapter_path,
+        mitigation_adapter_path=args.mitigation_adapter,
     )
 
     cls_head = None
@@ -112,7 +122,10 @@ def main():
 
     for image_path in image_paths:
         print(f"\n[info] Processing image: {image_path}", file=sys.stderr)
-        run_pipeline(vlm, vlm_processor, diffusion_model, image_path, cls_head=cls_head)
+        run_pipeline(
+            vlm, vlm_processor, diffusion_model, image_path,
+            cls_head=cls_head, thinking=not args.no_thinking,
+        )
 
 
 if __name__ == "__main__":
