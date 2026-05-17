@@ -2,7 +2,7 @@
 LoRA fine-tuning script — Bloc 1: Hateful Meme Detection.
 
 Architecture & design choices
-──────────────────────────────
+
 - Full-precision LoRA (bfloat16): loads the model weights in bfloat16, keeping
   all computation in native precision. Requires more VRAM than QLoRA but avoids
   quantisation noise and is faster per step.
@@ -21,19 +21,36 @@ Architecture & design choices
   Ref: Ouyang et al. (2022) "Training language models to follow instructions..."
        https://arxiv.org/abs/2203.02155
 
-- Hateful Memes Challenge dataset: purposely built with "benign confounders"
-  (same image / neutral text, same text / neutral image) to prevent unimodal
-  shortcuts. Ref: Kiela et al. (2020) https://arxiv.org/abs/2005.04790
+- Rich SFT targets from detection_full.jsonl (produced by format_dataset.py):
+    hateful:     {classification, description, hate_type, hate_location}
+    non-hateful: {classification, description}
+  Including description (chain-of-thought) and hate_type/hate_location gives the
+  model more training signal per example and teaches structured reasoning.
+
+- Meme text is included explicitly in the user turn ("Meme text: ...") to remove
+  the OCR bottleneck, mirroring the approach in train_mitigation.py.
+
+- QLoRA (default) vs full bf16 LoRA (--bf16): pass --bf16 to skip quantisation
+  for higher fidelity when VRAM allows; default is 4-bit NF4 QLoRA which fits
+  Gemma 4 31B on a single A100 40GB.
+
+- Catastrophic forgetting prevention: VISION_KEYWORDS explicitly covers the
+  vision encoder top-level module (vision_tower) and the cross-modal connector
+  (merger, multi_modal_projector) so LoRA is never applied to those modules.
+  Adapting the connector is the primary cause of visual-capability collapse
+  observed in prior runs.
 
 Usage:
+    # QLoRA (default, lower VRAM)
     python src/finetuning/train_detection.py \
         --model_name google/gemma-4-31b-it \
-        --train_jsonl data/hateful-meme/train.jsonl \
-        --val_jsonl   data/hateful-meme/dev.jsonl \
-        --img_dir     data/hateful-meme \
+        --dataset_jsonl data/finetuning/detection_full.jsonl \
         --output_dir  checkpoints/detect \
         --cache_dir   <hf-cache-dir> \
         --balance
+
+    # Full bf16 LoRA (higher fidelity, more VRAM)
+    python src/finetuning/train_detection.py ... --bf16
 """
 
 import sys
@@ -56,98 +73,90 @@ from sklearn.metrics import f1_score, roc_auc_score, classification_report, conf
 from transformers import (
     AutoProcessor,
     AutoModelForMultimodalLM,
+    BitsAndBytesConfig,
     TrainingArguments,
     Trainer,
     TrainerCallback,
 )
-from peft import LoraConfig, get_peft_model
+from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "unhate_pipeline"))
-from prompt import HATEFUL_DETECTION_PROMPT_FT
+from prompt import HATEFUL_DETECTION_PROMPT_FT_RICH
 from utils import parse_hateful_response
 
 logger = logging.getLogger(__name__)
 
-# Fixed CSV columns — covers all fields emitted by Trainer's on_log callbacks.
-# Using a predefined set (with extrasaction='ignore') avoids the broken-CSV bug
-# that arises when training rows and eval rows have different key sets.
 _CSV_FIELDNAMES = [
     "step", "epoch", "loss", "learning_rate", "grad_norm",
     "eval_loss", "eval_runtime", "eval_samples_per_second", "eval_steps_per_second",
 ]
 
 
-# Dataset
+#  Dataset 
 
-def load_jsonl(path: str) -> list[dict]:
+def load_jsonl(path: str) -> list:
     with open(path) as f:
         return [json.loads(line) for line in f if line.strip()]
 
 
-def build_train_val_split(
-    train_jsonl: str,
-    dev_jsonl: str,
-    exclude_jsonl: str | None,
-    val_ratio: float = 0.1,
-    seed: int = 42,
-) -> tuple[list[dict], list[dict]]:
+def build_train_val_split(dataset_jsonl: str, val_ratio: float = 0.1, seed: int = 42):
     """
-    Builds train and val lists from the hateful-meme dataset.
-
-    Strategy:
-    - Load train.jsonl (all labeled) + dev.jsonl minus any IDs in exclude_jsonl.
-    - Shuffle and split 90/10 for internal train/val.
-    - exclude_jsonl (eval_490_balanced.jsonl) is never included — it is the
-      sacred held-out test set used only for final evaluation.
+    Load detection_full.jsonl (pre-filtered by format_dataset.py) → 90/10 shuffle-split.
     """
-    exclude_ids: set = set()
-    if exclude_jsonl:
-        for item in load_jsonl(exclude_jsonl):
-            exclude_ids.add(item["id"])
-
-    pool: list[dict] = []
-
-    for item in load_jsonl(train_jsonl):
-        if item.get("label") is not None and item["id"] not in exclude_ids:
-            pool.append(item)
-
-    for item in load_jsonl(dev_jsonl):
-        if item.get("label") is not None and item["id"] not in exclude_ids:
-            pool.append(item)
+    pool = load_jsonl(dataset_jsonl)
 
     rng = random.Random(seed)
     rng.shuffle(pool)
     split = int(len(pool) * (1 - val_ratio))
     train_data, val_data = pool[:split], pool[split:]
 
-    label_count = lambda data: {  # noqa: E731
-        k: sum(1 for x in data if x["label"] == k) for k in (0, 1)
-    }
-    logger.info(f"Train: {len(train_data)} examples {label_count(train_data)}")
-    logger.info(f"Val  : {len(val_data)} examples {label_count(val_data)}")
-    if exclude_ids:
-        logger.info(f"Excluded {len(exclude_ids)} eval IDs (eval_490_balanced) from both splits")
+    def label_count(data):
+        return {k: sum(1 for x in data if x.get("label") == k) for k in (0, 1)}
 
+    logger.info(f"Loaded {len(pool)} records from {dataset_jsonl}")
+    logger.info(f"Train: {len(train_data)} {label_count(train_data)}")
+    logger.info(f"Val  : {len(val_data)} {label_count(val_data)}")
     return train_data, val_data
+
+
+def _build_assistant_response(item: dict) -> str:
+    """
+    Build the rich SFT target JSON from a detection_full.jsonl record.
+
+    Hateful:     {classification, description, hate_type, hate_location}
+    Non-hateful: {classification, description}
+    """
+    target = item["target"]
+    label = item.get("label")
+
+    assistant = {
+        "classification": target["classification"],
+        "description": target.get("description", ""),
+    }
+    if label == 1:
+        if target.get("hate_type"):
+            assistant["hate_type"] = target["hate_type"]
+        if target.get("hate_location"):
+            assistant["hate_location"] = target["hate_location"]
+
+    return json.dumps(assistant, ensure_ascii=False)
 
 
 class HatefulMemeDataset(Dataset):
     """
-    Wraps a list of hateful-meme records into SFT chat examples.
+    Wraps detection_full.jsonl records into SFT chat examples.
 
     Each example is a single-turn conversation:
-        user:      [image] + HATEFUL_DETECTION_PROMPT
-        assistant: {"classification": "hateful|non-hateful", "probability": 1.0|0.0}
+        user:      [image] + 'Meme text: "..."' + HATEFUL_DETECTION_PROMPT_FT_RICH
+        assistant: {classification, description[, hate_type, hate_location]}
 
     No system prompt — matches the inference call in vlm.detect_hateful_meme.
     """
 
-    def __init__(self, data: list[dict], img_dir: str, balance: bool = False):
-        self.img_dir = Path(img_dir)
-
+    def __init__(self, data: list, balance: bool = False):
         if balance:
-            hateful = [x for x in data if x["label"] == 1]
-            non_hateful = [x for x in data if x["label"] == 0]
+            hateful = [x for x in data if x.get("label") == 1]
+            non_hateful = [x for x in data if x.get("label") == 0]
             n = min(len(hateful), len(non_hateful))
             random.shuffle(hateful)
             random.shuffle(non_hateful)
@@ -162,26 +171,27 @@ class HatefulMemeDataset(Dataset):
 
     def __getitem__(self, idx):
         item = self.data[idx]
-        label_str = "hateful" if item["label"] == 1 else "non-hateful"
-        image = Image.open(self.img_dir / item["img"]).convert("RGB")
+        image = Image.open(item["img_path"]).convert("RGB")
+        meme_text = item.get("text", "") or ""
+        user_text = f'Meme text: "{meme_text}"\n\n{HATEFUL_DETECTION_PROMPT_FT_RICH}'
 
         messages = [
             {
                 "role": "user",
                 "content": [
                     {"type": "image"},
-                    {"type": "text", "text": HATEFUL_DETECTION_PROMPT_FT},
+                    {"type": "text", "text": user_text},
                 ],
             },
             {
                 "role": "assistant",
-                "content": json.dumps({"classification": label_str}),
+                "content": _build_assistant_response(item),
             },
         ]
-        return {"messages": messages, "image": image, "label": item["label"]}
+        return {"messages": messages, "image": image, "label": item.get("label")}
 
 
-# Collator — builds input_ids + labels with proper loss masking
+#  Collator 
 
 def collate_fn(batch, processor, max_length: int):
     """
@@ -193,8 +203,6 @@ def collate_fn(batch, processor, max_length: int):
 
     This implements the SFT objective from Ouyang et al. (2022).
     """
-    # Gemma 4 processor expects List[List[Image]] — one inner list per text example.
-    # A flat List[Image] is interpreted as one example with N images, not N examples.
     images = [[item["image"]] for item in batch]
     messages_list = [item["messages"] for item in batch]
 
@@ -220,7 +228,6 @@ def collate_fn(batch, processor, max_length: int):
         max_length=max_length,
     )
 
-    # Compute exact prefix lengths (including image tokens) per example
     prefix_lengths = []
     for text, image in zip(prefix_texts, images):
         enc = processor(text=[text], images=image, return_tensors="pt", padding=False)
@@ -238,13 +245,17 @@ def collate_fn(batch, processor, max_length: int):
     return full_inputs
 
 
-# LoRA helpers
+#  LoRA helpers 
 
-VISION_KEYWORDS = ("vision", "visual", "patch_embed", "image_tower", "img_encoder",
-                   "siglip", "clip", "vit", "multi_modal_projector")
+VISION_KEYWORDS = (
+    "vision", "visual", "patch_embed", "image_tower", "img_encoder",
+    "siglip", "clip", "vit", "multi_modal_projector",
+    "vision_tower",  # Gemma 4 / Qwen3-VL top-level vision encoder
+    "merger",        # Qwen3-VL cross-modal connector; adapting it collapses visual grounding
+)
 
 
-def find_lm_linear_names(model) -> list[str]:
+def find_lm_linear_names(model) -> list:
     """
     Returns full dotted paths of all Linear layers in the language-model trunk.
     Vision encoder layers are excluded (frozen).
@@ -268,7 +279,7 @@ def find_lm_linear_names(model) -> list[str]:
     return names
 
 
-# Callback: save metrics CSV + plot training curves after each eval
+#  Metrics callback 
 
 class MetricsLogger(TrainerCallback):
     """Appends eval metrics to a CSV and re-plots training curves after each eval."""
@@ -325,10 +336,10 @@ class MetricsLogger(TrainerCallback):
         plt.close(fig)
 
 
-# Post-training generative evaluation: F1 + AUROC + plots
+#  Post-training generative eval 
 
 @torch.inference_mode()
-def evaluate_f1(model, processor, val_dataset, max_new_tokens: int = 64,
+def evaluate_f1(model, processor, val_dataset, max_new_tokens: int = 128,
                 output_dir: Path = None):
     """
     Runs generation on the val set and computes F1 / AUROC.
@@ -338,17 +349,20 @@ def evaluate_f1(model, processor, val_dataset, max_new_tokens: int = 64,
     A model can have low loss but still misclassify if it outputs a well-formatted
     JSON with the wrong label. Generative eval measures what matters at inference.
     Ref: Kiela et al. (2020) use AUROC as the primary metric for this benchmark.
+
+    max_new_tokens is bumped to 128 (vs 64 previously) to accommodate the richer
+    JSON response that now includes description + optional hate_type/hate_location.
     """
     model.eval()
     y_true, y_pred, y_prob = [], [], []
 
     for item in val_dataset:
-        messages = item["messages"][:-1]  # user turn only (no assistant)
+        messages = item["messages"][:-1]  # user turn only
         text = processor.apply_chat_template(
             messages, tokenize=False, add_generation_prompt=True
         )
         inputs = processor(
-            text=[text], images=[item["image"]], return_tensors="pt", padding=False
+            text=[text], images=[[item["image"]]], return_tensors="pt", padding=False
         )
         inputs = {k: v.to(model.device) if hasattr(v, "to") else v
                   for k, v in inputs.items()}
@@ -359,7 +373,11 @@ def evaluate_f1(model, processor, val_dataset, max_new_tokens: int = 64,
             generated[:, prompt_len:], skip_special_tokens=True
         )[0]
 
-        is_hateful, probability, _ = parse_hateful_response(output)
+        try:
+            is_hateful, probability, _ = parse_hateful_response(output)
+        except (ValueError, TypeError):
+            is_hateful, probability = False, 0.0
+
         y_true.append(item["label"])
         y_pred.append(1 if is_hateful else 0)
         y_prob.append(probability)
@@ -380,7 +398,6 @@ def evaluate_f1(model, processor, val_dataset, max_new_tokens: int = 64,
 
         fig, axes = plt.subplots(1, 2, figsize=(11, 4))
 
-        # Probability distribution by ground-truth class
         probs = np.array(y_prob)
         labels_arr = np.array(y_true)
         for label, name, color in [(0, "non-hateful", "steelblue"), (1, "hateful", "tomato")]:
@@ -391,7 +408,6 @@ def evaluate_f1(model, processor, val_dataset, max_new_tokens: int = 64,
         axes[0].set_title("Confidence distribution by class")
         axes[0].legend()
 
-        # Confusion matrix
         cm = confusion_matrix(y_true, y_pred)
         ConfusionMatrixDisplay(cm, display_labels=["non-hateful", "hateful"]).plot(ax=axes[1])
         axes[1].set_title(f"Confusion matrix  (F1={f1:.3f}, AUROC={auroc:.3f})")
@@ -404,23 +420,17 @@ def evaluate_f1(model, processor, val_dataset, max_new_tokens: int = 64,
     return f1, auroc
 
 
-# Main
+#  Main 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_name", default="google/gemma-4-31B-it")
-    parser.add_argument("--train_jsonl", required=True,
-                        help="Path to train.jsonl (hateful-meme format).")
-    parser.add_argument("--dev_jsonl", required=True,
-                        help="Path to dev.jsonl. IDs in --exclude_jsonl are removed.")
-    parser.add_argument("--exclude_jsonl", default=None,
-                        help="JSONL whose IDs are excluded from train+dev "
-                             "(i.e. eval_490_balanced.jsonl). These form the sacred test set.")
-    parser.add_argument("--img_dir", required=True)
+    parser.add_argument("--dataset_jsonl", default="data/finetuning/detection_full.jsonl",
+                        help="Path to detection_full.jsonl produced by format_dataset.py.")
     parser.add_argument("--output_dir", required=True)
     parser.add_argument("--cache_dir", default=None)
     parser.add_argument("--val_ratio", type=float, default=0.1,
-                        help="Fraction of (train+dev minus exclude) held out for val.")
+                        help="Fraction of dataset held out for validation.")
     parser.add_argument("--lora_r", type=int, default=16,
                         help="LoRA rank. r=16 is a good default; r=32 gives more "
                              "capacity at ~2x adapter size. Hu et al. (2022).")
@@ -434,16 +444,26 @@ def main():
     parser.add_argument("--batch_size", type=int, default=1)
     parser.add_argument("--grad_accum", type=int, default=16,
                         help="Effective batch = batch_size * grad_accum.")
-    parser.add_argument("--max_length", type=int, default=768)
+    parser.add_argument("--max_length", type=int, default=1024,
+                        help="Bumped from 768 to accommodate the longer rich target JSON.")
     parser.add_argument("--max_train_samples", type=int, default=None,
-                        help="Cap the training set size (e.g. 2000 for fast debug runs). "
-                             "None = use all available data.")
+                        help="Cap the training set size (e.g. 200 for smoke runs).")
+    parser.add_argument("--bf16", action="store_true",
+                        help="Use full bfloat16 LoRA instead of QLoRA NF4. "
+                             "Higher VRAM, no quantisation noise. "
+                             "Default: QLoRA 4-bit NF4 (fits 31B on A100 40GB).")
     parser.add_argument("--balance", action="store_true",
                         help="Undersample majority class to 50/50.")
     parser.add_argument("--skip_final_eval", action="store_true",
                         help="Skip post-training generative F1 eval.")
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(message)s",
+        datefmt="%H:%M:%S",
+    )
 
     random.seed(args.seed)
     torch.manual_seed(args.seed)
@@ -453,7 +473,7 @@ def main():
     with open(output_dir / "run_config.json", "w") as f:
         json.dump(vars(args), f, indent=2)
 
-    # --- Processor ---
+    #  Processor 
     logger.info(f"Loading processor: {args.model_name}")
     processor = AutoProcessor.from_pretrained(
         args.model_name, cache_dir=args.cache_dir, trust_remote_code=True
@@ -462,23 +482,34 @@ def main():
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token
 
-    # --- Model (LoRA, bfloat16) ---
-    logger.info("Loading model in bfloat16 (LoRA)...")
+    # ── Model: QLoRA by default; --bf16 switches to full bfloat16 LoRA ───────────
+    if args.bf16:
+        quant_config = None
+        logger.info("Loading model in bfloat16 (no quantisation, LoRA only)...")
+    else:
+        quant_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=torch.bfloat16,
+            bnb_4bit_use_double_quant=True,
+        )
+        logger.info("Loading model in 4-bit NF4 (QLoRA, bf16 compute)...")
+
     model = AutoModelForMultimodalLM.from_pretrained(
         args.model_name,
         cache_dir=args.cache_dir,
         trust_remote_code=True,
         torch_dtype=torch.bfloat16,
+        quantization_config=quant_config,
         device_map="auto",
     )
-    model.config.use_cache = False  # required for gradient checkpointing
-    # enable_input_require_grads is needed so that gradient checkpointing works
-    # with LoRA: the frozen base model inputs must allow grad flow through adapters.
-    model.enable_input_require_grads()
+    model.config.use_cache = False
+    if quant_config is not None:
+        model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=True)
+    else:
+        model.enable_input_require_grads()
 
-    # --- LoRA ---
-    # r=16 introduces ~0.5% trainable parameters in bfloat16. Hu et al. (2022)
-    # show that low-rank adapters with r=4-16 match full fine-tuning on most NLP tasks.
+    #  LoRA 
     target_modules = find_lm_linear_names(model)
     logger.info(f"LoRA target modules ({len(target_modules)}): {target_modules}")
 
@@ -493,22 +524,19 @@ def main():
     model = get_peft_model(model, lora_config)
     model.print_trainable_parameters()
 
-    # --- Datasets ---
-    # Use all labeled data (train + dev minus eval IDs), split 90/10 internally.
+    #  Datasets 
     train_data, val_data = build_train_val_split(
-        train_jsonl=args.train_jsonl,
-        dev_jsonl=args.dev_jsonl,
-        exclude_jsonl=args.exclude_jsonl,
+        dataset_jsonl=args.dataset_jsonl,
         val_ratio=args.val_ratio,
         seed=args.seed,
     )
     if args.max_train_samples and args.max_train_samples < len(train_data):
         train_data = train_data[:args.max_train_samples]
         logger.info(f"Capped training set to {len(train_data)} examples (--max_train_samples)")
-    train_ds = HatefulMemeDataset(train_data, args.img_dir, balance=args.balance)
-    val_ds = HatefulMemeDataset(val_data, args.img_dir, balance=False)
+    train_ds = HatefulMemeDataset(train_data, balance=args.balance)
+    val_ds = HatefulMemeDataset(val_data, balance=False)
 
-    # --- Trainer ---
+    #  Trainer 
     training_args = TrainingArguments(
         output_dir=str(output_dir),
         num_train_epochs=args.num_epochs,
@@ -524,14 +552,14 @@ def main():
         eval_steps=200,
         save_strategy="steps",
         save_steps=200,
-        save_total_limit=3,           # keep last 3 checkpoints on disk
-        load_best_model_at_end=True,  # restore best checkpoint (min eval_loss)
+        save_total_limit=3,
+        load_best_model_at_end=True,
         metric_for_best_model="eval_loss",
         greater_is_better=False,
         logging_steps=10,
         report_to="none",
         remove_unused_columns=False,
-        dataloader_num_workers=0,     # 0 avoids PIL + fork issues on the cluster
+        dataloader_num_workers=0,
         seed=args.seed,
     )
 
@@ -547,13 +575,13 @@ def main():
     logger.info("Starting SFT training...")
     trainer.train()
 
-    # --- Save LoRA adapter only (not the full base model weights) ---
+    #  Save adapter 
     adapter_path = output_dir / "adapter_detect"
     model.save_pretrained(str(adapter_path))
     processor.save_pretrained(str(adapter_path))
     logger.info(f"LoRA adapter saved to {adapter_path}")
 
-    # --- Post-training generative eval: F1 + AUROC + plots ---
+    #  Post-training generative eval 
     if not args.skip_final_eval:
         logger.info("Running post-training generative evaluation (F1 / AUROC)...")
         evaluate_f1(model, processor, val_ds, output_dir=output_dir)
