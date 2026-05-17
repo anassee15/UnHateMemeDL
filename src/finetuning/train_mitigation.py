@@ -213,8 +213,13 @@ def collate_fn(batch, processor, max_length: int):
     labels = full_inputs["input_ids"].clone()
     tok = processor.tokenizer if hasattr(processor, "tokenizer") else processor
     pad_id = tok.pad_token_id
+    seq_len = full_inputs["input_ids"].shape[1]
     for i, prefix_len in enumerate(prefix_lengths):
-        labels[i, :prefix_len] = -100
+        # Guard: if the full sequence was truncated to max_length, the
+        # untruncated prefix_len can exceed seq_len, masking all assistant
+        # tokens and producing NaN loss. Clamp to seq_len - 1 so at least
+        # one assistant token is always eligible for the loss.
+        labels[i, :min(prefix_len, seq_len - 1)] = -100
     if pad_id is not None:
         labels[full_inputs["input_ids"] == pad_id] = -100
 
@@ -224,12 +229,15 @@ def collate_fn(batch, processor, max_length: int):
 
 # ── LoRA target selection ─────────────────────────────────────────────────────
 
-# Vision-side substrings; modules whose dotted name contains any of these are
-# frozen (not adapted). Covers Gemma 4 + Qwen-VL family naming.
+# Substrings whose dotted module name causes the module to be excluded from LoRA.
+# Covers: vision encoder + cross-modal connector (Gemma 4 / Qwen-VL naming) +
+# lm_head, which is tied to embed_tokens (tie_word_embeddings=True); adapting a
+# tied output layer with LoRA causes gradient instability and PEFT warnings.
 VISION_KEYWORDS = (
     "vision", "visual", "patch_embed", "image_tower", "img_encoder",
     "siglip", "clip", "vit", "multi_modal_projector",
     "vision_tower", "merger",
+    "lm_head",
 )
 
 
@@ -425,7 +433,8 @@ def main():
     parser.add_argument("--num_epochs", type=int, default=3)
     parser.add_argument("--batch_size", type=int, default=1)
     parser.add_argument("--grad_accum", type=int, default=16)
-    parser.add_argument("--max_length", type=int, default=1024)
+    parser.add_argument("--max_length", type=int, default=2048,
+                        help="Max token length.")
     parser.add_argument("--max_train_samples", type=int, default=None,
                         help="Cap the training set (e.g. 50 for smoke runs).")
     parser.add_argument("--skip_final_eval", action="store_true")

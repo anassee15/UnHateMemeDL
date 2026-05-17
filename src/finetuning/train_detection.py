@@ -236,8 +236,13 @@ def collate_fn(batch, processor, max_length: int):
     labels = full_inputs["input_ids"].clone()
     tok = processor.tokenizer if hasattr(processor, "tokenizer") else processor
     pad_id = tok.pad_token_id
+    seq_len = full_inputs["input_ids"].shape[1]
     for i, prefix_len in enumerate(prefix_lengths):
-        labels[i, :prefix_len] = -100
+        # Guard: if the full sequence was truncated to max_length, the
+        # untruncated prefix_len can exceed seq_len, masking all assistant
+        # tokens and producing NaN loss. Clamp to seq_len - 1 so at least
+        # one assistant token is always eligible for the loss.
+        labels[i, :min(prefix_len, seq_len - 1)] = -100
     if pad_id is not None:
         labels[full_inputs["input_ids"] == pad_id] = -100
 
@@ -245,13 +250,14 @@ def collate_fn(batch, processor, max_length: int):
     return full_inputs
 
 
-#  LoRA helpers 
+#  LoRA helpers
 
 VISION_KEYWORDS = (
     "vision", "visual", "patch_embed", "image_tower", "img_encoder",
     "siglip", "clip", "vit", "multi_modal_projector",
     "vision_tower",  # Gemma 4 / Qwen3-VL top-level vision encoder
     "merger",        # Qwen3-VL cross-modal connector; adapting it collapses visual grounding
+    "lm_head",       # tied to embed_tokens; LoRA on tied layers causes gradient instability
 )
 
 
