@@ -462,6 +462,13 @@ def evaluate_final(model, val_dataset, collate, output_dir: Path):
 #  Main 
 
 def main():
+    logging.basicConfig(
+        level=logging.WARNING,
+        format="%(asctime)s %(levelname)s — %(message)s",
+        datefmt="%H:%M:%S",
+    )
+    logger.setLevel(logging.INFO)
+    
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_name", default="google/gemma-4-31b-it")
     parser.add_argument("--train_jsonl", required=True)

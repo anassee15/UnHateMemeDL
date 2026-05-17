@@ -415,6 +415,12 @@ def evaluate_mitigation(model, processor, val_dataset, max_new_tokens: int = 320
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
+    logging.basicConfig(
+        level=logging.WARNING,
+        format="%(asctime)s %(levelname)s — %(message)s",
+        datefmt="%H:%M:%S",
+    )
+    logger.setLevel(logging.INFO)
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_name", default="google/gemma-4-31B-it",
                         help="HF model id. Tested with Gemma 4 31B-it and Qwen3-VL family.")

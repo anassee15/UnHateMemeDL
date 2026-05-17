@@ -429,6 +429,12 @@ def evaluate_f1(model, processor, val_dataset, max_new_tokens: int = 128,
 #  Main 
 
 def main():
+    logging.basicConfig(
+        level=logging.WARNING,
+        format="%(asctime)s %(levelname)s — %(message)s",
+        datefmt="%H:%M:%S",
+    )
+    logger.setLevel(logging.INFO)
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_name", default="google/gemma-4-31B-it")
     parser.add_argument("--dataset_jsonl", default="data/finetuning/detection_full.jsonl",
