@@ -124,10 +124,9 @@ def mitigate_image(pipe, image: Image.Image, mitigation: dict, generator=None) -
     hate_loc = mitigation["hate_location"]
 
     # A: Handle visual mitigation with diffusion model (if needed)
-    if hate_loc in ("VISUAL_ONLY", "COMBINED", "INTERSECTIONAL", "STRUCTURAL"):
+    if hate_loc in ("VISUAL_ONLY", "COMBINED", "INTERSECTIONAL"):
         print(f"[info] Mitigating visual elements...")
-        # Accept legacy `flux_prompt` key for backward compat with older parsed outputs.
-        prompt = mitigation.get("diffusion_prompt") or mitigation.get("flux_prompt")
+        prompt = mitigation["diffusion_prompt"]
         image = run_diffusion(pipe, image, prompt, generator=generator)
 
     # B: Handle text mitigation (Remove/replace hateful text) if needed

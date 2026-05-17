@@ -2,7 +2,7 @@
 QLoRA fine-tuning script — Bloc 2: Mitigation prompt generation.
 
 Architecture & design choices
-──────────────────────────────
+
 - QLoRA (Dettmers et al., 2023, https://arxiv.org/abs/2305.14314): 4-bit NF4
   base + bfloat16 LoRA adapters. Fits Gemma 4 31B / Qwen3-VL 27B on a single
   A100 80GB or even 40GB at this batch size. `--bf16` switches to full bf16
@@ -41,6 +41,7 @@ import json
 import random
 import logging
 import argparse
+from tqdm import tqdm
 from pathlib import Path
 from functools import partial
 
@@ -77,7 +78,7 @@ _CSV_FIELDNAMES = [
 HATE_LOCATIONS = ("VISUAL_ONLY", "TEXT_ONLY", "COMBINED", "INTERSECTIONAL")
 
 
-# ── Dataset ───────────────────────────────────────────────────────────────────
+#  Dataset 
 
 def load_jsonl(path: str) -> list[dict]:
     with open(path) as f:
@@ -159,7 +160,7 @@ class MitigationDataset(Dataset):
         }
 
 
-# ── Collator ──────────────────────────────────────────────────────────────────
+#  Collator 
 
 def _is_qwen(processor) -> bool:
     return "Qwen" in processor.__class__.__name__
@@ -227,7 +228,7 @@ def collate_fn(batch, processor, max_length: int):
     return full_inputs
 
 
-# ── LoRA target selection ─────────────────────────────────────────────────────
+#  LoRA target selection 
 
 # Substrings whose dotted module name causes the module to be excluded from LoRA.
 # Covers: vision encoder + cross-modal connector (Gemma 4 / Qwen-VL naming) +
@@ -258,7 +259,7 @@ def find_lm_linear_names(model) -> list[str]:
     return names
 
 
-# ── Metrics callback (mirrors train_detection.py) ─────────────────────────────
+#  Metrics callback (mirrors train_detection.py) 
 
 class MetricsLogger(TrainerCallback):
     """Appends train/eval metrics to a CSV and re-plots curves after each eval."""
@@ -315,7 +316,7 @@ class MetricsLogger(TrainerCallback):
         plt.close(fig)
 
 
-# ── Post-training generative eval ─────────────────────────────────────────────
+#  Post-training generative eval 
 
 @torch.inference_mode()
 def evaluate_mitigation(model, processor, val_dataset, max_new_tokens: int = 320,
@@ -338,7 +339,7 @@ def evaluate_mitigation(model, processor, val_dataset, max_new_tokens: int = 320
     y_true_loc, y_pred_loc = [], []
     bad_examples = []
 
-    for idx in range(n):
+    for idx in tqdm(range(n), desc="Evaluating"):
         item = val_dataset[idx]
         messages = item["messages"][:-1]  # user only
         text = processor.apply_chat_template(
@@ -412,7 +413,7 @@ def evaluate_mitigation(model, processor, val_dataset, max_new_tokens: int = 320
     return validity_rate, completeness_rate, loc_accuracy
 
 
-# ── Main ──────────────────────────────────────────────────────────────────────
+#  Main 
 
 def main():
     logging.basicConfig(
@@ -455,7 +456,7 @@ def main():
     with open(output_dir / "run_config.json", "w") as f:
         json.dump(vars(args), f, indent=2)
 
-    # ── Processor ─────────────────────────────────────────────────────────────
+    #  Processor 
     logger.info(f"Loading processor: {args.model_name}")
     processor = AutoProcessor.from_pretrained(
         args.model_name, cache_dir=args.cache_dir, trust_remote_code=True
@@ -464,7 +465,7 @@ def main():
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token
 
-    # ── Model: QLoRA by default; --bf16 swaps to full bf16 LoRA ───────────────
+    #  Model: QLoRA by default; --bf16 swaps to full bf16 LoRA 
     if args.bf16:
         quant_config = None
         logger.info("Loading model in bfloat16 (no quantisation, LoRA only)...")
@@ -495,7 +496,7 @@ def main():
     else:
         model.enable_input_require_grads()
 
-    # ── LoRA ──────────────────────────────────────────────────────────────────
+    #  LoRA 
     target_modules = find_lm_linear_names(model)
     logger.info(f"LoRA target modules ({len(target_modules)} matched)")
 
@@ -510,7 +511,7 @@ def main():
     model = get_peft_model(model, lora_config)
     model.print_trainable_parameters()
 
-    # ── Datasets ──────────────────────────────────────────────────────────────
+    #  Datasets 
     train_data, val_data = build_train_val_split(
         dataset_jsonl=args.dataset_jsonl,
         val_ratio=args.val_ratio,
@@ -522,7 +523,7 @@ def main():
     train_ds = MitigationDataset(train_data)
     val_ds = MitigationDataset(val_data)
 
-    # ── Trainer ───────────────────────────────────────────────────────────────
+    #  Trainer 
     training_args = TrainingArguments(
         output_dir=str(output_dir),
         num_train_epochs=args.num_epochs,
@@ -535,7 +536,8 @@ def main():
         bf16=True,
         gradient_checkpointing=True,
         eval_strategy="steps",
-        eval_steps=200,
+        eval_steps=50,
+        eval_on_start=True,
         save_strategy="steps",
         save_steps=200,
         save_total_limit=3,
@@ -561,13 +563,13 @@ def main():
     logger.info("Starting SFT training...")
     trainer.train()
 
-    # ── Save adapter only ─────────────────────────────────────────────────────
+    #  Save adapter only 
     adapter_path = output_dir / "adapter_mitigation"
     model.save_pretrained(str(adapter_path))
     processor.save_pretrained(str(adapter_path))
     logger.info(f"LoRA adapter saved to {adapter_path}")
 
-    # ── Post-training generative eval ─────────────────────────────────────────
+    #  Post-training generative eval 
     if not args.skip_final_eval:
         logger.info("Running post-training generative evaluation...")
         evaluate_mitigation(model, processor, val_ds, output_dir=output_dir)
