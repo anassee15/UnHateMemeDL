@@ -255,7 +255,7 @@ def main():
     parser.add_argument("--jsonl",     required=True,  help="Path to eval JSONL file")
     parser.add_argument("--img_dir",   default=None,   help="Dataset root (images resolved as <img_dir>/<img field>)")
     parser.add_argument("--output",    default="report/detection_predictions.csv")
-    parser.add_argument("--vlm_name",  default="google/gemma-4-31b-it")
+    parser.add_argument("--vlm_name",  default="google/gemma-4-31B-it")
     parser.add_argument("--cache_dir", default=None)
     parser.add_argument("--adapter_path", default=None,
                         help="LoRA adapter directory (checkpoints/detect/adapter_detect). "

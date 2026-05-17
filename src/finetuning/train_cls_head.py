@@ -514,7 +514,7 @@ def main():
         args.model_name,
         cache_dir=args.cache_dir,
         trust_remote_code=True,
-        torch_dtype=torch.bfloat16,
+        dtype=torch.bfloat16,
         device_map="auto",
     )
     vlm.config.use_cache = False
@@ -565,7 +565,7 @@ def main():
         gradient_accumulation_steps=args.grad_accum,
         learning_rate=args.learning_rate,
         lr_scheduler_type="cosine",
-        warmup_ratio=0.05,
+        warmup_steps=0.05,
         bf16=True,
         gradient_checkpointing=False,
         eval_strategy="steps",
