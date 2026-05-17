@@ -66,11 +66,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "unhate_pipeline"))
 from prompt import GET_DIFFUSION_PROMPT
 from utils import parse_prompt_generation
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    datefmt="%H:%M:%S",
-)
 logger = logging.getLogger(__name__)
 
 # Fixed CSV columns — covers all fields emitted by Trainer's on_log callbacks.

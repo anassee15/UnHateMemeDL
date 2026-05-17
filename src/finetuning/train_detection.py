@@ -459,12 +459,6 @@ def main():
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(message)s",
-        datefmt="%H:%M:%S",
-    )
-
     random.seed(args.seed)
     torch.manual_seed(args.seed)
     output_dir = Path(args.output_dir)
