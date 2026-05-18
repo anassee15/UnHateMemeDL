@@ -78,9 +78,10 @@ from transformers import (
 )
 from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "unhate_pipeline"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "unhate_pipeline"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from prompt import HATEFUL_DETECTION_PROMPT_FT_RICH
-from finetuning.utils_training import parse_hateful_response
+from utils import parse_hateful_response
 
 from finetuning.utils_training import (
     SFTMetricsLogger,
@@ -114,10 +115,11 @@ def build_train_val_split(dataset_jsonl: str, val_ratio: float = 0.1, seed: int 
 
 def _build_assistant_response(item: dict) -> str:
     """
-    Build the rich SFT target JSON from a detection_full.jsonl record.
+    Build the SFT target JSON from a detection_full.jsonl record.
 
-    Hateful:     {classification, description, hate_type, hate_location}
-    Non-hateful: {classification, description}
+    Schema: {classification, description, probability}
+    probability comes from target["probability"] in the dataset; falls back to
+    the binary label (1.0 / 0.0) if the field is absent.
     """
     target = item["target"]
     label = item.get("label")
@@ -125,6 +127,7 @@ def _build_assistant_response(item: dict) -> str:
     assistant = {
         "classification": target["classification"],
         "description": target.get("description", ""),
+        "probability": target.get("probability", 1.0 if label == 1 else 0.0),
     }
     return json.dumps(assistant, ensure_ascii=False)
 
@@ -135,7 +138,7 @@ class HatefulMemeDataset(Dataset):
 
     Each example is a single-turn conversation:
         user:      [image] + 'Meme text: "..."' + HATEFUL_DETECTION_PROMPT_FT_RICH
-        assistant: {classification, description[, hate_type, hate_location]}
+        assistant: {classification, description, probability}
 
     No system prompt — matches the inference call in vlm.detect_hateful_meme.
     """

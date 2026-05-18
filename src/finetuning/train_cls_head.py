@@ -64,7 +64,8 @@ from transformers import (
 )
 from transformers.modeling_outputs import SequenceClassifierOutput
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "unhate_pipeline"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "unhate_pipeline"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from prompt import HATEFUL_DETECTION_PROMPT_FT
 
 from finetuning.utils_training import compute_warmup_steps, load_jsonl, stratified_split

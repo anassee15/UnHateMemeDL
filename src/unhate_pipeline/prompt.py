@@ -45,10 +45,10 @@ HATEFUL_DETECTION_PROMPT_FT = (
 )
 
 
-# Rich SFT prompt for detection training against detection_full.jsonl.
-# Asks for classification + description (chain-of-thought) + hate_type +
-# hate_location so the model learns both the label and the reasoning behind it.
-# hate_type and hate_location are only present in the target for hateful examples.
+# Rich SFT prompt for detection fine-tuning.
+# Schema matches the training targets: classification + description + probability.
+# probability is always 0.0 or 1.0 in training (binary ground truth) but the
+# model learns to emit a calibrated float at inference.
 HATEFUL_DETECTION_PROMPT_FT_RICH = (
     HATEFUL_DEFINITION + "\n\n"
     "Classification criteria: A meme is considered hateful if either the image or text is hateful on its own. "
@@ -56,25 +56,18 @@ HATEFUL_DETECTION_PROMPT_FT_RICH = (
     "but together convey a hateful message. Conversely, if neither the image nor the text is hateful and "
     "they do not together create a hateful meaning, the meme is not considered hateful.\n\n"
     "Analyse the meme and return ONLY valid JSON — no extra text, markdown, or code fences.\n\n"
-    "For a hateful meme use this schema:\n"
+    "Required JSON schema:\n"
     "{\n"
-    '  "classification": "hateful",\n'
-    '  "description": "<one sentence explaining precisely what makes this meme hateful and why>",\n'
-    '  "hate_type": ["<category>", ...],\n'
-    '  "hate_location": "VISUAL_ONLY | TEXT_ONLY | COMBINED | INTERSECTIONAL"\n'
+    '  "classification": "hateful | non-hateful",\n'
+    '  "description": "<one sentence explaining precisely what makes this meme hateful, or why it is not hateful>",\n'
+    '  "probability": <number from 0 to 1>\n'
     "}\n\n"
-    "For a non-hateful meme use this schema:\n"
-    "{\n"
-    '  "classification": "non-hateful",\n'
-    '  "description": "<one sentence explaining why the meme is not hateful>"\n'
-    "}\n\n"
-    "hate_type values (list one or more): racist, xenophobic, religious_hate, antisemitic, islamophobic, "
-    "sexist, homophobic, transphobic, ableist, anti_immigrant, historical_violence, dehumanization, other.\n\n"
-    "hate_location values: VISUAL_ONLY (image hateful, text neutral), TEXT_ONLY (text hateful, image benign), "
-    "COMBINED (hate emerges from image+text together), INTERSECTIONAL (both are independently hateful).\n\n"
     "Rules: classification must be exactly 'hateful' or 'non-hateful'. "
     "description must be one concise sentence. "
-    "hate_type and hate_location are only present for hateful memes."
+    "probability must be a numeric value in [0, 1] reflecting confidence that the meme is hateful:\n",
+    "- < 0.3 = clearly benign\n",
+    "- > 0.7 = clearly hateful\n",
+    "- 0.3-0.6 = ambiguous\n"
 )
 
 

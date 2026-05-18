@@ -8,6 +8,7 @@ from transformers import AutoProcessor, AutoModelForImageTextToText
 
 from prompt import (
     HATEFUL_DETECTION_PROMPT, HATEFUL_DETECTION_PROMPT_FT,
+    HATEFUL_DETECTION_PROMPT_FT_RICH,
     TYPE_OF_HATE_PROMPT, SOURCE_OF_HATE_PROMPT,
     build_diffusion_prompt,
 )
@@ -187,7 +188,11 @@ def run_vlm(model, processor, image_path, prompt, thinking=False, max_new_tokens
 
 
 def detect_hateful_meme(model, processor, image_path, thinking=False, max_new_tokens=512, temperature=0.95):
-    return run_vlm(model, processor, image_path, HATEFUL_DETECTION_PROMPT, thinking, max_new_tokens, temperature)
+    # Use the fine-tuning prompt when a LoRA adapter is active (schema matches training targets).
+    # Fall back to the base prompt for non-fine-tuned models.
+    is_finetuned = hasattr(model, "peft_config") and len(getattr(model, "peft_config", {})) > 0
+    prompt = HATEFUL_DETECTION_PROMPT_FT_RICH if is_finetuned else HATEFUL_DETECTION_PROMPT
+    return run_vlm(model, processor, image_path, prompt, thinking, max_new_tokens, temperature)
 
 
 def detect_hate_modality(model, processor, image_path, thinking=False, max_new_tokens=512, temperature=0.95):
