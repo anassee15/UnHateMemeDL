@@ -133,12 +133,6 @@ def _build_assistant_response(item: dict) -> str:
         "classification": target["classification"],
         "description": target.get("description", ""),
     }
-    if label == 1:
-        if target.get("hate_type"):
-            assistant["hate_type"] = target["hate_type"]
-        if target.get("hate_location"):
-            assistant["hate_location"] = target["hate_location"]
-
     return json.dumps(assistant, ensure_ascii=False)
 
 
@@ -193,7 +187,28 @@ class HatefulMemeDataset(Dataset):
 
 #  Collator 
 
-def collate_fn(batch, processor, max_length: int):
+def _find_classification_token_positions(input_ids_row: list, prefix_len: int,
+                                         label: int, tok) -> list:
+    """
+    Return the token positions (in the full sequence) that correspond to the
+    classification value string — either "hateful" or "non-hateful".
+
+    Strategy: tokenise `"hateful"` / `"non-hateful"` in isolation (no special
+    tokens) then search for that exact sub-sequence in the assistant portion of
+    the full token sequence.  Works reliably for simple alphanumeric values on
+    all BPE tokenisers; falls back to [] if the sub-sequence is not found.
+    """
+    value = "hateful" if label == 1 else "non-hateful"
+    # Encode with surrounding quotes as they appear in the JSON string
+    value_ids = tok.encode(f'"{value}"', add_special_tokens=False)
+    assistant_ids = input_ids_row[prefix_len:]
+    for i in range(len(assistant_ids) - len(value_ids) + 1):
+        if assistant_ids[i: i + len(value_ids)] == value_ids:
+            return [prefix_len + i + j for j in range(len(value_ids))]
+    return []
+
+
+def collate_fn(batch, processor, max_length: int, classification_weight: float = 1.0):
     """
     Applies chat template, tokenises, and masks user/image tokens from the loss.
 
@@ -201,7 +216,11 @@ def collate_fn(batch, processor, max_length: int):
         labels[i, :prefix_len] = -100   (user turn + image patches)
         labels[padding positions] = -100
 
-    This implements the SFT objective from Ouyang et al. (2022).
+    When classification_weight > 1, a per-token weight tensor is added to the
+    batch under the key "loss_weights".  The classification value tokens
+    ("hateful" / "non-hateful") receive weight=classification_weight; all other
+    assistant tokens receive weight=1.0.  WeightedLossTrainer uses this tensor
+    to rebalance gradient signal toward the binary label.
     """
     images = [[item["image"]] for item in batch]
     messages_list = [item["messages"] for item in batch]
@@ -247,6 +266,20 @@ def collate_fn(batch, processor, max_length: int):
         labels[full_inputs["input_ids"] == pad_id] = -100
 
     full_inputs["labels"] = labels
+
+    if classification_weight != 1.0:
+        loss_weights = torch.ones_like(full_inputs["input_ids"], dtype=torch.float32)
+        for i, (item, prefix_len) in enumerate(zip(batch, prefix_lengths)):
+            positions = _find_classification_token_positions(
+                full_inputs["input_ids"][i].tolist(),
+                min(prefix_len, seq_len - 1),
+                item["label"],
+                tok,
+            )
+            for pos in positions:
+                loss_weights[i, pos] = classification_weight
+        full_inputs["loss_weights"] = loss_weights
+
     return full_inputs
 
 
