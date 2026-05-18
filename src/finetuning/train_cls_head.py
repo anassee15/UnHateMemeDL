@@ -67,7 +67,7 @@ from transformers.modeling_outputs import SequenceClassifierOutput
 sys.path.insert(0, str(Path(__file__).parent.parent / "unhate_pipeline"))
 from prompt import HATEFUL_DETECTION_PROMPT_FT
 
-from utils import compute_warmup_steps, load_jsonl, stratified_split
+from finetuning.utils_training import compute_warmup_steps, load_jsonl, stratified_split
 
 logger = logging.getLogger(__name__)
 

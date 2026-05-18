@@ -62,9 +62,9 @@ from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "unhate_pipeline"))
 from prompt import GET_DIFFUSION_PROMPT
-from utils import parse_prompt_generation
+from finetuning.utils_training import parse_prompt_generation
 
-from utils import (
+from finetuning.utils_training import (
     SFTMetricsLogger,
     compute_warmup_steps,
     find_lm_linear_names,
