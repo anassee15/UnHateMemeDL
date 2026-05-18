@@ -36,10 +36,7 @@ Usage:
 """
 
 import sys
-import csv
 import json
-import math
-import random
 import logging
 import argparse
 from tqdm import tqdm
@@ -60,7 +57,6 @@ from transformers import (
     BitsAndBytesConfig,
     TrainingArguments,
     Trainer,
-    TrainerCallback,
 )
 from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 
@@ -68,56 +64,35 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "unhate_pipeline"))
 from prompt import GET_DIFFUSION_PROMPT
 from utils import parse_prompt_generation
 
-logger = logging.getLogger(__name__)
+from utils import (
+    SFTMetricsLogger,
+    compute_warmup_steps,
+    find_lm_linear_names,
+    load_jsonl,
+    mask_prefix_and_pad,
+    stratified_split,
+)
 
-# Fixed CSV columns — covers all fields emitted by Trainer's on_log callbacks.
-_CSV_FIELDNAMES = [
-    "step", "epoch", "loss", "learning_rate", "grad_norm",
-    "eval_loss", "eval_runtime", "eval_samples_per_second", "eval_steps_per_second",
-]
+logger = logging.getLogger(__name__)
 
 HATE_LOCATIONS = ("VISUAL_ONLY", "TEXT_ONLY", "COMBINED", "INTERSECTIONAL")
 
 
-#  Dataset 
-
-def load_jsonl(path: str) -> list[dict]:
-    with open(path) as f:
-        return [json.loads(line) for line in f if line.strip()]
-
+#  Dataset
 
 def build_train_val_split(
     dataset_jsonl: str,
     val_ratio: float = 0.1,
     seed: int = 42,
 ):
-    """
-    Load mitigation.jsonl (pre-filtered by format_dataset.py) → stratified
-    90/10 split on `hate_location`.
-
-    Plain shuffle-splits drift the per-category ratio at small dataset sizes
-    (~2k samples, 10% val). Since `hate_location` is also the headline metric
-    reported by evaluate_mitigation, the val set must preserve every category
-    or eval_loss / accuracy become unreliable model-selection signals.
-    Records missing hate_location are bucketed under None so they still appear
-    in both splits.
-    """
+    """Load mitigation.jsonl → stratified 90/10 split on `hate_location`."""
     pool = load_jsonl(dataset_jsonl)
-
-    rng = random.Random(seed)
-    by_loc: dict = {}
-    for rec in pool:
-        loc = rec.get("target", {}).get("hate_location")
-        by_loc.setdefault(loc, []).append(rec)
-
-    train_data, val_data = [], []
-    for recs in by_loc.values():
-        rng.shuffle(recs)
-        split = int(len(recs) * (1 - val_ratio))
-        train_data.extend(recs[:split])
-        val_data.extend(recs[split:])
-    rng.shuffle(train_data)
-    rng.shuffle(val_data)
+    train_data, val_data = stratified_split(
+        pool,
+        key_fn=lambda r: r.get("target", {}).get("hate_location"),
+        val_ratio=val_ratio,
+        seed=seed,
+    )
 
     def loc_dist(data):
         return {loc: sum(1 for x in data if x.get("target", {}).get("hate_location") == loc)
@@ -233,112 +208,14 @@ def collate_fn(batch, processor, max_length: int):
             enc = processor(text=[text], images=[image], return_tensors="pt", padding=False)
         prefix_lengths.append(enc["input_ids"].shape[1])
 
-    labels = full_inputs["input_ids"].clone()
     tok = processor.tokenizer if hasattr(processor, "tokenizer") else processor
-    pad_id = tok.pad_token_id
-    seq_len = full_inputs["input_ids"].shape[1]
-    for i, prefix_len in enumerate(prefix_lengths):
-        # Guard: if the full sequence was truncated to max_length, the
-        # untruncated prefix_len can exceed seq_len, masking all assistant
-        # tokens and producing NaN loss. Clamp to seq_len - 1 so at least
-        # one assistant token is always eligible for the loss.
-        labels[i, :min(prefix_len, seq_len - 1)] = -100
-    if pad_id is not None:
-        labels[full_inputs["input_ids"] == pad_id] = -100
-
-    full_inputs["labels"] = labels
+    full_inputs["labels"] = mask_prefix_and_pad(
+        full_inputs["input_ids"], prefix_lengths, tok.pad_token_id,
+    )
     return full_inputs
 
 
-#  LoRA target selection 
-
-# Substrings whose dotted module name causes the module to be excluded from LoRA.
-# Covers: vision encoder + cross-modal connector (Gemma 4 / Qwen-VL naming) +
-# lm_head, which is tied to embed_tokens (tie_word_embeddings=True); adapting a
-# tied output layer with LoRA causes gradient instability and PEFT warnings.
-VISION_KEYWORDS = (
-    "vision", "visual", "patch_embed", "image_tower", "img_encoder",
-    "siglip", "clip", "vit", "multi_modal_projector",
-    "vision_tower", "merger",
-    "lm_head",
-)
-
-
-def find_lm_linear_names(model) -> list[str]:
-    """
-    Full dotted paths of Linear layers in the LM trunk (vision tower excluded).
-    Uses full paths (not leaf names) so PEFT cannot accidentally match same-named
-    vision modules.
-    """
-    names = []
-    for name, module in model.named_modules():
-        if any(kw in name for kw in VISION_KEYWORDS):
-            continue
-        if not isinstance(module, torch.nn.Linear):
-            continue
-        if len(name.split(".")[-1]) > 2:
-            names.append(name)
-    return names
-
-
-#  Metrics callback (mirrors train_detection.py) 
-
-class MetricsLogger(TrainerCallback):
-    """Appends train/eval metrics to a CSV and re-plots curves after each eval."""
-
-    def __init__(self, output_dir: Path):
-        self.output_dir = output_dir
-        self.csv_path = output_dir / "training_metrics.csv"
-        self._header_written = self.csv_path.exists()
-
-    def on_log(self, _args, state, _control, logs=None, **_kwargs):
-        if logs is None or not state.is_world_process_zero:
-            return
-        row = {"step": state.global_step,
-               **{k: v for k, v in logs.items() if isinstance(v, (int, float))}}
-        with open(self.csv_path, "a", newline="") as f:
-            writer = csv.DictWriter(
-                f, fieldnames=_CSV_FIELDNAMES, extrasaction="ignore", restval=""
-            )
-            if not self._header_written:
-                writer.writeheader()
-                self._header_written = True
-            writer.writerow(row)
-
-    def on_evaluate(self, _args, state, _control, **_kwargs):
-        if state.is_world_process_zero:
-            self._plot_curves()
-
-    def _plot_curves(self):
-        if not self.csv_path.exists():
-            return
-        steps, train_loss, eval_rows = [], [], []
-        with open(self.csv_path) as f:
-            for row in csv.DictReader(f):
-                s = int(row["step"])
-                if row.get("loss"):
-                    steps.append(s)
-                    train_loss.append(float(row["loss"]))
-                if row.get("eval_loss"):
-                    eval_rows.append((s, float(row["eval_loss"])))
-
-        fig, ax = plt.subplots(figsize=(8, 4))
-        if train_loss:
-            ax.plot(steps[:len(train_loss)], train_loss, label="Train loss", alpha=0.7)
-        if eval_rows:
-            ex, ey = zip(*eval_rows)
-            ax.plot(ex, ey, label="Val loss", marker="o", linewidth=2)
-        ax.set_xlabel("Training step")
-        ax.set_ylabel("Cross-entropy loss (SFT)")
-        ax.set_title("Mitigation adapter — LoRA training curves")
-        ax.legend()
-        ax.grid(alpha=0.3)
-        fig.tight_layout()
-        fig.savefig(self.output_dir / "training_curves.png", dpi=150)
-        plt.close(fig)
-
-
-#  Post-training generative eval 
+#  Post-training generative eval
 
 @torch.inference_mode()
 def evaluate_mitigation(model, processor, val_dataset, max_new_tokens: int = 320,
@@ -545,9 +422,9 @@ def main():
     train_ds = MitigationDataset(train_data)
     val_ds = MitigationDataset(val_data)
 
-    steps_per_epoch = math.ceil(len(train_ds) / (args.batch_size * args.grad_accum))
-    total_train_steps = steps_per_epoch * args.num_epochs
-    warmup_steps = max(1, int(0.03 * total_train_steps))
+    warmup_steps = compute_warmup_steps(
+        len(train_ds), args.batch_size, args.grad_accum, args.num_epochs, ratio=0.03,
+    )
 
     #  Trainer
     training_args = TrainingArguments(
@@ -583,7 +460,7 @@ def main():
         train_dataset=train_ds,
         eval_dataset=val_ds,
         data_collator=partial(collate_fn, processor=processor, max_length=args.max_length),
-        callbacks=[MetricsLogger(output_dir)],
+        callbacks=[SFTMetricsLogger(output_dir, title="Mitigation adapter — LoRA training curves")],
     )
 
     logger.info("Starting SFT training...")

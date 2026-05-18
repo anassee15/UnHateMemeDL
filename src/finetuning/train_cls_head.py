@@ -37,8 +37,6 @@ Usage:
 import sys
 import csv
 import json
-import math
-import random
 import logging
 import argparse
 from pathlib import Path
@@ -69,6 +67,8 @@ from transformers.modeling_outputs import SequenceClassifierOutput
 sys.path.insert(0, str(Path(__file__).parent.parent / "unhate_pipeline"))
 from prompt import HATEFUL_DETECTION_PROMPT_FT
 
+from utils import compute_warmup_steps, load_jsonl, stratified_split
+
 logger = logging.getLogger(__name__)
 
 _CSV_FIELDNAMES = [
@@ -78,12 +78,7 @@ _CSV_FIELDNAMES = [
 ]
 
 
-#  Data utilities 
-
-def load_jsonl(path: str) -> list[dict]:
-    with open(path) as f:
-        return [json.loads(line) for line in f if line.strip()]
-
+#  Data utilities
 
 def build_train_val_split(
     train_jsonl: str,
@@ -92,38 +87,21 @@ def build_train_val_split(
     val_ratio: float = 0.1,
     seed: int = 42,
 ) -> tuple[list[dict], list[dict]]:
-    """
-    Merges train.jsonl + dev.jsonl, removes eval IDs, splits 90/10.
-    The exclude_jsonl (eval_490_balanced.jsonl) is the sacred held-out test set.
-    """
+    """Merge train.jsonl + dev.jsonl, drop eval IDs, stratified 90/10 split on label."""
     exclude_ids: set = set()
     if exclude_jsonl:
         for item in load_jsonl(exclude_jsonl):
             exclude_ids.add(item["id"])
 
     pool: list[dict] = []
-    for item in load_jsonl(train_jsonl):
-        if item.get("label") is not None and item["id"] not in exclude_ids:
-            pool.append(item)
-    for item in load_jsonl(dev_jsonl):
-        if item.get("label") is not None and item["id"] not in exclude_ids:
-            pool.append(item)
+    for src in (train_jsonl, dev_jsonl):
+        for item in load_jsonl(src):
+            if item.get("label") is not None and item["id"] not in exclude_ids:
+                pool.append(item)
 
-    # Stratify by binary label so val class balance is preserved exactly.
-    # BestHeadSaver selects checkpoints on eval_f1, which is sensitive to
-    # class-ratio drift in small (~10%) val splits.
-    rng = random.Random(seed)
-    by_label: dict = {}
-    for item in pool:
-        by_label.setdefault(item["label"], []).append(item)
-    train_data, val_data = [], []
-    for recs in by_label.values():
-        rng.shuffle(recs)
-        split = int(len(recs) * (1 - val_ratio))
-        train_data.extend(recs[:split])
-        val_data.extend(recs[split:])
-    rng.shuffle(train_data)
-    rng.shuffle(val_data)
+    train_data, val_data = stratified_split(
+        pool, key_fn=lambda r: r["label"], val_ratio=val_ratio, seed=seed,
+    )
 
     label_count = lambda data: {k: sum(1 for x in data if x["label"] == k) for k in (0, 1)}  # noqa: E731
     logger.info(f"Train: {len(train_data)} examples {label_count(train_data)}")
@@ -575,9 +553,9 @@ def main():
 
     collate = partial(collate_fn, processor=processor, max_length=args.max_length)
 
-    steps_per_epoch = math.ceil(len(train_ds) / (args.batch_size * args.grad_accum))
-    total_train_steps = steps_per_epoch * args.num_epochs
-    warmup_steps = max(1, int(0.05 * total_train_steps))
+    warmup_steps = compute_warmup_steps(
+        len(train_ds), args.batch_size, args.grad_accum, args.num_epochs, ratio=0.05,
+    )
 
     #  Trainer
     training_args = TrainingArguments(

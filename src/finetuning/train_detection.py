@@ -54,9 +54,7 @@ Usage:
 """
 
 import sys
-import csv
 import json
-import math
 import random
 import logging
 import argparse
@@ -77,7 +75,6 @@ from transformers import (
     BitsAndBytesConfig,
     TrainingArguments,
     Trainer,
-    TrainerCallback,
 )
 from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 
@@ -85,44 +82,26 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "unhate_pipeline"))
 from prompt import HATEFUL_DETECTION_PROMPT_FT_RICH
 from utils import parse_hateful_response
 
+from utils import (
+    SFTMetricsLogger,
+    compute_warmup_steps,
+    find_lm_linear_names,
+    load_jsonl,
+    mask_prefix_and_pad,
+    stratified_split,
+)
+
 logger = logging.getLogger(__name__)
 
-_CSV_FIELDNAMES = [
-    "step", "epoch", "loss", "learning_rate", "grad_norm",
-    "eval_loss", "eval_runtime", "eval_samples_per_second", "eval_steps_per_second",
-]
 
-
-#  Dataset 
-
-def load_jsonl(path: str) -> list:
-    with open(path) as f:
-        return [json.loads(line) for line in f if line.strip()]
-
+#  Dataset
 
 def build_train_val_split(dataset_jsonl: str, val_ratio: float = 0.1, seed: int = 42):
-    """
-    Load detection_full.jsonl (pre-filtered by format_dataset.py) → stratified
-    90/10 split so that the val set preserves the hateful / non-hateful ratio.
-    With ~2k samples and val_ratio=0.1 a plain random split can drift the val
-    class balance by several percent, making eval_loss a noisy model-selection
-    signal; stratification keeps the per-class count exact.
-    """
+    """Load detection_full.jsonl → stratified 90/10 split on the binary label."""
     pool = load_jsonl(dataset_jsonl)
-
-    rng = random.Random(seed)
-    by_label: dict[int, list] = {}
-    for rec in pool:
-        by_label.setdefault(rec.get("label"), []).append(rec)
-
-    train_data, val_data = [], []
-    for label, recs in by_label.items():
-        rng.shuffle(recs)
-        split = int(len(recs) * (1 - val_ratio))
-        train_data.extend(recs[:split])
-        val_data.extend(recs[split:])
-    rng.shuffle(train_data)
-    rng.shuffle(val_data)
+    train_data, val_data = stratified_split(
+        pool, key_fn=lambda r: r.get("label"), val_ratio=val_ratio, seed=seed,
+    )
 
     def label_count(data):
         return {k: sum(1 for x in data if x.get("label") == k) for k in (0, 1)}
@@ -266,20 +245,12 @@ def collate_fn(batch, processor, max_length: int, classification_weight: float =
         enc = processor(text=[text], images=image, return_tensors="pt", padding=False)
         prefix_lengths.append(enc["input_ids"].shape[1])
 
-    labels = full_inputs["input_ids"].clone()
     tok = processor.tokenizer if hasattr(processor, "tokenizer") else processor
     pad_id = tok.pad_token_id
     seq_len = full_inputs["input_ids"].shape[1]
-    for i, prefix_len in enumerate(prefix_lengths):
-        # Guard: if the full sequence was truncated to max_length, the
-        # untruncated prefix_len can exceed seq_len, masking all assistant
-        # tokens and producing NaN loss. Clamp to seq_len - 1 so at least
-        # one assistant token is always eligible for the loss.
-        labels[i, :min(prefix_len, seq_len - 1)] = -100
-    if pad_id is not None:
-        labels[full_inputs["input_ids"] == pad_id] = -100
-
-    full_inputs["labels"] = labels
+    full_inputs["labels"] = mask_prefix_and_pad(
+        full_inputs["input_ids"], prefix_lengths, pad_id,
+    )
 
     if classification_weight != 1.0:
         loss_weights = torch.ones_like(full_inputs["input_ids"], dtype=torch.float32)
@@ -295,41 +266,6 @@ def collate_fn(batch, processor, max_length: int, classification_weight: float =
         full_inputs["loss_weights"] = loss_weights
 
     return full_inputs
-
-
-#  LoRA helpers
-
-VISION_KEYWORDS = (
-    "vision", "visual", "patch_embed", "image_tower", "img_encoder",
-    "siglip", "clip", "vit", "multi_modal_projector",
-    "vision_tower",  # Gemma 4 / Qwen3-VL top-level vision encoder
-    "merger",        # Qwen3-VL cross-modal connector; adapting it collapses visual grounding
-    "lm_head",       # tied to embed_tokens; LoRA on tied layers causes gradient instability
-)
-
-
-def find_lm_linear_names(model) -> list:
-    """
-    Returns full dotted paths of all Linear layers in the language-model trunk.
-    Vision encoder layers are excluded (frozen).
-
-    Uses full paths (not leaf names) so that PEFT targets exactly these modules
-    and cannot accidentally match same-named layers in the vision encoder
-    (e.g. Gemma4ClippableLinear wrappers that share leaf names like q_proj).
-
-    Design rationale: adapting only the LM trunk is sufficient for cross-modal
-    reasoning tasks — see LLaVA-1.5 (Liu et al., 2023) which shows that
-    instruction-tuning the LLM while freezing CLIP achieves SOTA on 11 benchmarks.
-    """
-    names = []
-    for name, module in model.named_modules():
-        if any(kw in name for kw in VISION_KEYWORDS):
-            continue
-        if not isinstance(module, torch.nn.Linear):
-            continue
-        if len(name.split(".")[-1]) > 2:
-            names.append(name)
-    return names
 
 
 #  Weighted-loss Trainer
@@ -379,64 +315,7 @@ class WeightedLossTrainer(Trainer):
         return (loss, outputs) if return_outputs else loss
 
 
-#  Metrics callback
-
-class MetricsLogger(TrainerCallback):
-    """Appends eval metrics to a CSV and re-plots training curves after each eval."""
-
-    def __init__(self, output_dir: Path):
-        self.output_dir = output_dir
-        self.csv_path = output_dir / "training_metrics.csv"
-        self._header_written = self.csv_path.exists()
-
-    def on_log(self, _args, state, _control, logs=None, **_kwargs):
-        if logs is None or not state.is_world_process_zero:
-            return
-        row = {"step": state.global_step,
-               **{k: v for k, v in logs.items() if isinstance(v, (int, float))}}
-        with open(self.csv_path, "a", newline="") as f:
-            writer = csv.DictWriter(
-                f, fieldnames=_CSV_FIELDNAMES, extrasaction="ignore", restval=""
-            )
-            if not self._header_written:
-                writer.writeheader()
-                self._header_written = True
-            writer.writerow(row)
-
-    def on_evaluate(self, _args, state, _control, **_kwargs):
-        if state.is_world_process_zero:
-            self._plot_curves()
-
-    def _plot_curves(self):
-        if not self.csv_path.exists():
-            return
-        steps, train_loss, eval_rows = [], [], []
-        with open(self.csv_path) as f:
-            for row in csv.DictReader(f):
-                s = int(row["step"])
-                if row.get("loss"):
-                    steps.append(s)
-                    train_loss.append(float(row["loss"]))
-                if row.get("eval_loss"):
-                    eval_rows.append((s, float(row["eval_loss"])))
-
-        fig, ax = plt.subplots(figsize=(8, 4))
-        if train_loss:
-            ax.plot(steps[:len(train_loss)], train_loss, label="Train loss", alpha=0.7)
-        if eval_rows:
-            ex, ey = zip(*eval_rows)
-            ax.plot(ex, ey, label="Val loss", marker="o", linewidth=2)
-        ax.set_xlabel("Training step")
-        ax.set_ylabel("Cross-entropy loss (SFT)")
-        ax.set_title("Detection adapter — LoRA training curves")
-        ax.legend()
-        ax.grid(alpha=0.3)
-        fig.tight_layout()
-        fig.savefig(self.output_dir / "training_curves.png", dpi=150)
-        plt.close(fig)
-
-
-#  Post-training generative eval 
+#  Post-training generative eval
 
 @torch.inference_mode()
 def evaluate_f1(model, processor, val_dataset, max_new_tokens: int = 128,
@@ -642,9 +521,9 @@ def main():
     train_ds = HatefulMemeDataset(train_data, balance=args.balance)
     val_ds = HatefulMemeDataset(val_data, balance=False)
 
-    steps_per_epoch = math.ceil(len(train_ds) / (args.batch_size * args.grad_accum))
-    total_train_steps = steps_per_epoch * args.num_epochs
-    warmup_steps = max(1, int(0.03 * total_train_steps))
+    warmup_steps = compute_warmup_steps(
+        len(train_ds), args.batch_size, args.grad_accum, args.num_epochs, ratio=0.03,
+    )
 
     #  Trainer
     training_args = TrainingArguments(
@@ -686,7 +565,7 @@ def main():
             max_length=args.max_length,
             classification_weight=args.classification_weight,
         ),
-        callbacks=[MetricsLogger(output_dir)],
+        callbacks=[SFTMetricsLogger(output_dir, title="Detection adapter — LoRA training curves")],
     )
 
     logger.info("Starting SFT training...")
