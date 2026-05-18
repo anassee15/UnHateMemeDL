@@ -56,6 +56,7 @@ Usage:
 import sys
 import csv
 import json
+import math
 import random
 import logging
 import argparse
@@ -101,14 +102,27 @@ def load_jsonl(path: str) -> list:
 
 def build_train_val_split(dataset_jsonl: str, val_ratio: float = 0.1, seed: int = 42):
     """
-    Load detection_full.jsonl (pre-filtered by format_dataset.py) → 90/10 shuffle-split.
+    Load detection_full.jsonl (pre-filtered by format_dataset.py) → stratified
+    90/10 split so that the val set preserves the hateful / non-hateful ratio.
+    With ~2k samples and val_ratio=0.1 a plain random split can drift the val
+    class balance by several percent, making eval_loss a noisy model-selection
+    signal; stratification keeps the per-class count exact.
     """
     pool = load_jsonl(dataset_jsonl)
 
     rng = random.Random(seed)
-    rng.shuffle(pool)
-    split = int(len(pool) * (1 - val_ratio))
-    train_data, val_data = pool[:split], pool[split:]
+    by_label: dict[int, list] = {}
+    for rec in pool:
+        by_label.setdefault(rec.get("label"), []).append(rec)
+
+    train_data, val_data = [], []
+    for label, recs in by_label.items():
+        rng.shuffle(recs)
+        split = int(len(recs) * (1 - val_ratio))
+        train_data.extend(recs[:split])
+        val_data.extend(recs[split:])
+    rng.shuffle(train_data)
+    rng.shuffle(val_data)
 
     def label_count(data):
         return {k: sum(1 for x in data if x.get("label") == k) for k in (0, 1)}
@@ -318,7 +332,54 @@ def find_lm_linear_names(model) -> list:
     return names
 
 
-#  Metrics callback 
+#  Weighted-loss Trainer
+
+class WeightedLossTrainer(Trainer):
+    """
+    Trainer subclass that applies per-token loss weights produced by collate_fn.
+
+    Why: with the rich SFT target the assistant turn is dominated by the
+    description tokens (~30-60 tokens) while the classification value is just
+    1-3 tokens. Standard SFT therefore spreads gradient signal across stylistic
+    description tokens and under-weights the binary label that we actually care
+    about at inference. Multiplying the classification tokens' contribution by
+    `classification_weight` (>1) refocuses gradient on the label without
+    discarding the description chain-of-thought.
+
+    Implementation mirrors the standard causal-LM next-token shift: predictions
+    at position t use logits[:, t-1] to predict labels[:, t], so the same shift
+    is applied to the weight tensor.
+    """
+
+    def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
+        loss_weights = inputs.pop("loss_weights", None)
+        outputs = model(**inputs)
+        if loss_weights is None:
+            loss = outputs.loss
+            return (loss, outputs) if return_outputs else loss
+
+        logits = outputs.logits
+        labels = inputs["labels"]
+
+        shift_logits = logits[..., :-1, :].contiguous()
+        shift_labels = labels[..., 1:].contiguous()
+        shift_weights = loss_weights[..., 1:].contiguous().to(shift_logits.dtype)
+
+        loss_fct = torch.nn.CrossEntropyLoss(reduction="none", ignore_index=-100)
+        flat_loss = loss_fct(
+            shift_logits.view(-1, shift_logits.size(-1)),
+            shift_labels.view(-1),
+        ).view(shift_labels.shape)
+
+        mask = (shift_labels != -100).to(shift_logits.dtype)
+        weighted = flat_loss * shift_weights * mask
+        denom = (shift_weights * mask).sum().clamp_min(1.0)
+        loss = weighted.sum() / denom
+
+        return (loss, outputs) if return_outputs else loss
+
+
+#  Metrics callback
 
 class MetricsLogger(TrainerCallback):
     """Appends eval metrics to a CSV and re-plots training curves after each eval."""
@@ -499,6 +560,12 @@ def main():
                              "Default: QLoRA 4-bit NF4 (fits 31B on A100 40GB).")
     parser.add_argument("--balance", action="store_true",
                         help="Undersample majority class to 50/50.")
+    parser.add_argument("--classification_weight", type=float, default=1.0,
+                        help="Per-token weight applied to the classification "
+                             "value tokens ('hateful' / 'non-hateful') in the "
+                             "SFT loss. >1 refocuses gradient on the binary "
+                             "label vs the surrounding description tokens. "
+                             "1.0 disables reweighting (standard SFT).")
     parser.add_argument("--skip_final_eval", action="store_true",
                         help="Skip post-training generative F1 eval.")
     parser.add_argument("--seed", type=int, default=42)
@@ -575,7 +642,11 @@ def main():
     train_ds = HatefulMemeDataset(train_data, balance=args.balance)
     val_ds = HatefulMemeDataset(val_data, balance=False)
 
-    #  Trainer 
+    steps_per_epoch = math.ceil(len(train_ds) / (args.batch_size * args.grad_accum))
+    total_train_steps = steps_per_epoch * args.num_epochs
+    warmup_steps = max(1, int(0.03 * total_train_steps))
+
+    #  Trainer
     training_args = TrainingArguments(
         output_dir=str(output_dir),
         num_train_epochs=args.num_epochs,
@@ -584,7 +655,7 @@ def main():
         gradient_accumulation_steps=args.grad_accum,
         learning_rate=args.learning_rate,
         lr_scheduler_type="cosine",
-        warmup_steps=0.03,
+        warmup_steps=warmup_steps,
         bf16=True,
         gradient_checkpointing=True,
         eval_strategy="steps",
@@ -603,12 +674,18 @@ def main():
         seed=args.seed,
     )
 
-    trainer = Trainer(
+    trainer_cls = WeightedLossTrainer if args.classification_weight != 1.0 else Trainer
+    trainer = trainer_cls(
         model=model,
         args=training_args,
         train_dataset=train_ds,
         eval_dataset=val_ds,
-        data_collator=partial(collate_fn, processor=processor, max_length=args.max_length),
+        data_collator=partial(
+            collate_fn,
+            processor=processor,
+            max_length=args.max_length,
+            classification_weight=args.classification_weight,
+        ),
         callbacks=[MetricsLogger(output_dir)],
     )
 

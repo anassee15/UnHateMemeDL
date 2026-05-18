@@ -37,6 +37,7 @@ Usage:
 import sys
 import csv
 import json
+import math
 import random
 import logging
 import argparse
@@ -108,10 +109,21 @@ def build_train_val_split(
         if item.get("label") is not None and item["id"] not in exclude_ids:
             pool.append(item)
 
+    # Stratify by binary label so val class balance is preserved exactly.
+    # BestHeadSaver selects checkpoints on eval_f1, which is sensitive to
+    # class-ratio drift in small (~10%) val splits.
     rng = random.Random(seed)
-    rng.shuffle(pool)
-    split = int(len(pool) * (1 - val_ratio))
-    train_data, val_data = pool[:split], pool[split:]
+    by_label: dict = {}
+    for item in pool:
+        by_label.setdefault(item["label"], []).append(item)
+    train_data, val_data = [], []
+    for recs in by_label.values():
+        rng.shuffle(recs)
+        split = int(len(recs) * (1 - val_ratio))
+        train_data.extend(recs[:split])
+        val_data.extend(recs[split:])
+    rng.shuffle(train_data)
+    rng.shuffle(val_data)
 
     label_count = lambda data: {k: sum(1 for x in data if x["label"] == k) for k in (0, 1)}  # noqa: E731
     logger.info(f"Train: {len(train_data)} examples {label_count(train_data)}")
@@ -563,7 +575,11 @@ def main():
 
     collate = partial(collate_fn, processor=processor, max_length=args.max_length)
 
-    #  Trainer 
+    steps_per_epoch = math.ceil(len(train_ds) / (args.batch_size * args.grad_accum))
+    total_train_steps = steps_per_epoch * args.num_epochs
+    warmup_steps = max(1, int(0.05 * total_train_steps))
+
+    #  Trainer
     training_args = TrainingArguments(
         output_dir=str(output_dir),
         num_train_epochs=args.num_epochs,
@@ -572,7 +588,7 @@ def main():
         gradient_accumulation_steps=args.grad_accum,
         learning_rate=args.learning_rate,
         lr_scheduler_type="cosine",
-        warmup_steps=0.05,
+        warmup_steps=warmup_steps,
         bf16=True,
         gradient_checkpointing=False,
         eval_strategy="steps",

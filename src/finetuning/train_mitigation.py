@@ -38,6 +38,7 @@ Usage:
 import sys
 import csv
 import json
+import math
 import random
 import logging
 import argparse
@@ -91,14 +92,32 @@ def build_train_val_split(
     seed: int = 42,
 ):
     """
-    Load mitigation.jsonl (pre-filtered by format_dataset.py) → 90/10 shuffle-split.
+    Load mitigation.jsonl (pre-filtered by format_dataset.py) → stratified
+    90/10 split on `hate_location`.
+
+    Plain shuffle-splits drift the per-category ratio at small dataset sizes
+    (~2k samples, 10% val). Since `hate_location` is also the headline metric
+    reported by evaluate_mitigation, the val set must preserve every category
+    or eval_loss / accuracy become unreliable model-selection signals.
+    Records missing hate_location are bucketed under None so they still appear
+    in both splits.
     """
     pool = load_jsonl(dataset_jsonl)
 
     rng = random.Random(seed)
-    rng.shuffle(pool)
-    split = int(len(pool) * (1 - val_ratio))
-    train_data, val_data = pool[:split], pool[split:]
+    by_loc: dict = {}
+    for rec in pool:
+        loc = rec.get("target", {}).get("hate_location")
+        by_loc.setdefault(loc, []).append(rec)
+
+    train_data, val_data = [], []
+    for recs in by_loc.values():
+        rng.shuffle(recs)
+        split = int(len(recs) * (1 - val_ratio))
+        train_data.extend(recs[:split])
+        val_data.extend(recs[split:])
+    rng.shuffle(train_data)
+    rng.shuffle(val_data)
 
     def loc_dist(data):
         return {loc: sum(1 for x in data if x.get("target", {}).get("hate_location") == loc)
@@ -208,7 +227,10 @@ def collate_fn(batch, processor, max_length: int):
         if _is_qwen(processor):
             enc = processor(text=[text], images=[image], return_tensors="pt", padding=False)
         else:
-            enc = processor(text=[text], images=image, return_tensors="pt", padding=False)
+            # Gemma processor expects List[List[Image]] (outer batch dim, inner
+            # per-example image list). `image` is already the inner list `[PIL]`,
+            # so wrap once more to keep the same nesting as the batch call above.
+            enc = processor(text=[text], images=[image], return_tensors="pt", padding=False)
         prefix_lengths.append(enc["input_ids"].shape[1])
 
     labels = full_inputs["input_ids"].clone()
@@ -523,7 +545,11 @@ def main():
     train_ds = MitigationDataset(train_data)
     val_ds = MitigationDataset(val_data)
 
-    #  Trainer 
+    steps_per_epoch = math.ceil(len(train_ds) / (args.batch_size * args.grad_accum))
+    total_train_steps = steps_per_epoch * args.num_epochs
+    warmup_steps = max(1, int(0.03 * total_train_steps))
+
+    #  Trainer
     training_args = TrainingArguments(
         output_dir=str(output_dir),
         num_train_epochs=args.num_epochs,
@@ -532,7 +558,7 @@ def main():
         gradient_accumulation_steps=args.grad_accum,
         learning_rate=args.learning_rate,
         lr_scheduler_type="cosine",
-        warmup_steps=0.03,
+        warmup_steps=warmup_steps,
         bf16=True,
         gradient_checkpointing=True,
         eval_strategy="steps",
