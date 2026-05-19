@@ -1,5 +1,6 @@
 """
-QLoRA fine-tuning script — Bloc 2: Mitigation prompt generation.
+QLoRA fine-tuning script
+Bloc 2: Mitigation prompt generation
 
 Architecture & design choices
 
@@ -20,12 +21,12 @@ Architecture & design choices
 - Target JSON is the tight 5-field schema (see prompt.GET_DIFFUSION_PROMPT):
       {hate_source, hate_location, diffusion_prompt, original_text, replacement_text}
   `hate_source` is emitted first so the model's own description acts as a
-  chain-of-thought scaffold before the structured fields — known to improve
+  chain-of-thought scaffold before the structured fields, known to improve
   structured output quality.
 
-- Training data: data/finetuning/mitigation.jsonl (produced by format_dataset.py).
+- Training data: data/finetuning/mitigation.jsonl
   Already filtered to hateful-only records with valid diffusion_prompt and
-  eval IDs excluded — no post-loading filtering needed here.
+  eval IDs excluded, no post-loading filtering needed here.
 
 Usage:
     python src/finetuning/train_mitigation.py \
@@ -39,6 +40,7 @@ import sys
 import json
 import logging
 import argparse
+import random
 from tqdm import tqdm
 from pathlib import Path
 from functools import partial
@@ -118,7 +120,7 @@ class MitigationDataset(Dataset):
       assistant: {"hate_source": ..., "hate_location": ..., "diffusion_prompt": ...,
                   "original_text": ..., "replacement_text": ...}
 
-    No system prompt — keeps the inference shape identical to the training
+    No system prompt, keeps the inference shape identical to the training
     shape (the FT model is called via vlm.get_diffusion_prompt(use_ft_prompt=True),
     which also passes no system prompt).
     """
@@ -156,7 +158,6 @@ class MitigationDataset(Dataset):
 
 
 #  Collator 
-
 def _is_qwen(processor) -> bool:
     return "Qwen" in processor.__class__.__name__
 
@@ -217,7 +218,6 @@ def collate_fn(batch, processor, max_length: int):
 
 
 #  Post-training generative eval
-
 @torch.inference_mode()
 def evaluate_mitigation(model, processor, val_dataset, max_new_tokens: int = 320,
                         output_dir: Path = None):
@@ -314,7 +314,6 @@ def evaluate_mitigation(model, processor, val_dataset, max_new_tokens: int = 320
 
 
 #  Main 
-
 def main():
     logging.basicConfig(
         level=logging.WARNING,
@@ -365,7 +364,6 @@ def main():
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token
 
-    #  Model: QLoRA by default; --bf16 swaps to full bf16 LoRA 
     if args.bf16:
         quant_config = None
         logger.info("Loading model in bfloat16 (no quantisation, LoRA only)...")

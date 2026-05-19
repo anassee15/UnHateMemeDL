@@ -164,49 +164,6 @@ mitigation_strategy:
 Return ONLY the JSON object, no markdown fences, no explanation."""
 
 
-# Fixed few-shot example: img/08291.png, text="white people is this a shooting range", label=1
-EXAMPLE_RESPONSE = json.dumps({
-"meme_category": {
-"label": "identity_social",
-"probability": 0.82
-},
-"affective_register": {
-"overall_sentiment": {
-"label": "negative",
-"probability": 0.78
-},
-"humour": {
-"label": "funny",
-"probability": 0.65
-},
-"sarcasm": {
-"label": "twisted_meaning",
-"probability": 0.80
-},
-"offense": {
-"label": "very_offensive",
-"probability": 0.82
-},
-"motivation": {
-"label": "not_motivational",
-"probability": 0.95
-}
-},
-"classification": "hateful",
-"probability": 0.83,
-"hate_type": ["dehumanization", "sexist"],
-"hate_location": "COMBINED",
-"description": "The meme dehumanizes men by pairing the caption 'a group of men' with an image of dogs, implying that men as a gender group are comparable to animals, which constitutes dehumanization targeting a gender identity.",
-"mitigation": {
-"diffusion_prompt": "Three happy dogs sitting on a green lawn looking upward with open mouths and wagging tails, photographed in bright natural daylight with a shallow depth of field. The group includes a Bernese Mountain Dog in the center, a Golden Retriever puppy on the right, and another large dog in the background. The scene is warm, cheerful, and candid, capturing a joyful outdoor moment.",
-"original_text": "a group of men",
-"replacement_text": "a group of good boys",
-"mitigation_strategy": "Replaced the human gender label 'a group of men' with the affectionate dog-specific phrase 'a group of good boys' to preserve the playful humor of the meme format while removing the dehumanizing comparison of men to dogs."
-} })
-
-EXAMPLE_IMG_RELPATH = "hateful-meme/img/06123.png"
-
-
 def load_eval_ids(data_dir: Path) -> set[str]:
     """Return the set of record IDs present in any eval_data jsonl file."""
     eval_ids = set()
@@ -273,7 +230,6 @@ def user_text(text: str, label: int) -> str:
 def call_claude(
     client: anthropic.Anthropic,
     record: dict,
-    example_source: dict | None,
     usage_totals: dict,
 ) -> tuple[dict | None, dict | None]:
     """Returns (parsed_result, per_call_usage) or (None, None) on failure."""
@@ -398,7 +354,6 @@ def _compute_cost(usage: dict) -> float:
 
 def format_call_cost(usage: dict) -> str:
     cost = _compute_cost(usage)
-    total_in = usage["input"] + usage["cache_read"] + usage["cache_creation"]
     cached = "HIT" if usage["cache_read"] > 0 else ("WRITE" if usage["cache_creation"] > 0 else "MISS")
     return (
         f"${cost:.4f} | "
@@ -445,7 +400,7 @@ def run_phase(
     with open(output_path, "a") as out_f:
         for i, record in enumerate(remaining):
             print(f"[{i+1}/{len(remaining)}] {record['id']}", end=" ... ", flush=True)
-            result, call_usage = call_claude(client, record, None, usage_totals)
+            result, call_usage = call_claude(client, record, usage_totals)
             if result is None:
                 print("SKIP")
                 continue
@@ -505,7 +460,7 @@ def main():
 
     # Phase 2: non-hateful to reach 60/40 split
     # 60% hateful → total = hateful_target / 0.6, non-hateful = total * 0.4
-    non_hateful_target = round(args.hateful_target * 2 / 3)  # 1000 hateful → 667 non-hateful ≈ 60/40
+    non_hateful_target = round(args.hateful_target * 2 / 3)  # 1000 hateful -> 667 non-hateful ≈ 60/40
     non_hateful_sample = sample_phase(records, label=0, target=non_hateful_target, seed=args.seed + 1)
 
     done_ids = load_done_ids(output_path)
@@ -515,10 +470,10 @@ def main():
     client = anthropic.Anthropic(api_key=args.api_key)
     usage_totals = {"input": 0, "output": 0, "cache_creation": 0, "cache_read": 0}
 
-    # --- Phase 1: hateful ---
+    # Phase 1: hateful 
     run_phase(client, hateful_sample, done_ids, output_path, args.delay, "Phase 1 — Hateful memes", usage_totals)
 
-    # --- Balance check before Phase 2 ---
+    # Balance check before Phase 2 
     if args.skip_non_hateful:
         print("\nSkipping Phase 2 (--skip_non_hateful set).")
     else:

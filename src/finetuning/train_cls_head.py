@@ -1,8 +1,7 @@
 """
 Classification head fine-tuning script — Bloc 1: Hateful Meme Detection.
 
-Approach
-─────────
+Approach:
 
 The entire VLM (vision encoder + multimodal projector + LM trunk) is kept
 completely frozen. A single Linear(hidden_dim → 1) head is trained on top of
@@ -12,16 +11,6 @@ the last-token hidden state that the frozen model produces when given:
 
 Loss: binary cross-entropy (BCEWithLogitsLoss).
 Output: sigmoid(logit) ∈ [0, 1] used directly as the hateful probability.
-
-Why this is safer than LoRA for a 31B model
-────────────────────────────────────────────
-
-- Zero risk of catastrophic forgetting: base weights never change.
-- Only ~hidden_dim parameters are trainable (≈7 K for a 7168-dim model).
-- Memory: 31 B x 2 bytes ≈ 62 GB (bfloat16) + negligible head — fits A100 80 GB.
-- No activation graph is stored for the frozen VLM (torch.no_grad inside forward),
-  so per-step memory is close to pure inference.
-- Larger effective batch size than LoRA because no VLM gradients to accumulate.
 
 Usage:
     python src/finetuning/train_cls_head.py \
@@ -39,6 +28,7 @@ import csv
 import json
 import logging
 import argparse
+import random
 from pathlib import Path
 from functools import partial
 
@@ -118,10 +108,6 @@ def build_train_val_split(
 class HatefulMemeDataset(Dataset):
     """
     Returns raw (image, binary_label) pairs.
-
-    Simpler than the SFT dataset: no chat template, no assistant response.
-    The chat template is applied in the collator so the processor can handle
-    image token insertion correctly alongside the text.
     """
 
     def __init__(self, data: list[dict], img_dir: str, balance: bool = False):
@@ -149,7 +135,6 @@ class HatefulMemeDataset(Dataset):
 
 
 #  Collator 
-
 def collate_fn(batch, processor, max_length: int):
     """
     Builds model inputs from (image, label) pairs.
@@ -194,14 +179,13 @@ def collate_fn(batch, processor, max_length: int):
 
 
 #  Model 
-
 class VLMWithClassificationHead(nn.Module):
     """
     Frozen VLM + trainable binary classification head.
 
     Step-by-step forward pass:
       1. Run the frozen VLM with output_hidden_states=True (inside torch.no_grad
-         so no activation graph is stored — equivalent to inference memory cost).
+         so no activation graph is stored, equivalent to inference memory cost).
       2. Extract the hidden state of the last non-padding token from the final
          transformer layer. For a decoder-only model this token has attended to
          the full sequence (image patches + prompt text) and carries the most
@@ -231,7 +215,7 @@ class VLMWithClassificationHead(nn.Module):
         labels: torch.Tensor | None = None,
         **kwargs,
     ) -> SequenceClassifierOutput:
-        # Step 1 — frozen VLM forward (no gradient graph, saves ~62 GB of
+        # Step 1: frozen VLM forward (no gradient graph, saves ~62 GB of
         # intermediate activations that would otherwise be retained for backprop)
         with torch.no_grad():
             outputs = self.vlm(
@@ -241,7 +225,7 @@ class VLMWithClassificationHead(nn.Module):
                 **kwargs,
             )
 
-        # Step 2 — last non-padding token of the final transformer layer
+        # Step 2: last non-padding token of the final transformer layer
         last_hidden = outputs.hidden_states[-1]          # (B, T, D)
         if attention_mask is not None:
             # attention_mask is 1 for real tokens, 0 for padding (right-padded)
@@ -254,10 +238,10 @@ class VLMWithClassificationHead(nn.Module):
         batch_idx = torch.arange(last_hidden.size(0), device=last_hidden.device)
         pooled = last_hidden[batch_idx, seq_lengths]     # (B, D)
 
-        # Step 3 — classification head
+        # Step 3: classification head
         logits = self.classifier(pooled)                 # (B, 1)
 
-        # Step 4 — loss
+        # Step 4: loss
         loss = None
         if labels is not None:
             loss = F.binary_cross_entropy_with_logits(
@@ -268,16 +252,9 @@ class VLMWithClassificationHead(nn.Module):
 
 
 #  Callback: save best head only
-
 class BestHeadSaver(TrainerCallback):
     """
     Saves only the classifier head (28 KB) whenever val F1 improves.
-
-    Why not use Trainer's built-in save_strategy?
-    Trainer would try to save the full frozen VLM (~62 GB) at each checkpoint,
-    which hits two problems: prohibitive disk usage and a safetensors error on
-    tied weights (embed_tokens / lm_head share the same tensor in Gemma 4).
-    Since the VLM is frozen, checkpointing it is pointless — only the head changes.
     """
 
     def __init__(self, model: "VLMWithClassificationHead", output_dir: Path):
@@ -296,7 +273,6 @@ class BestHeadSaver(TrainerCallback):
 
 
 #  Callback: CSV logging + training curves
-
 class MetricsLogger(TrainerCallback):
     """Appends eval metrics to a CSV and re-plots training curves after each eval."""
 
@@ -368,7 +344,6 @@ class MetricsLogger(TrainerCallback):
 
 
 #  Metrics for Trainer 
-
 def compute_metrics(eval_pred):
     """
     Called by Trainer after each eval step.
@@ -390,7 +365,6 @@ def compute_metrics(eval_pred):
 
 
 #  Post-training evaluation 
-
 @torch.inference_mode()
 def evaluate_final(model, val_dataset, collate, output_dir: Path):
     """Full classification report + confusion matrix + probability histogram."""
@@ -451,7 +425,6 @@ def evaluate_final(model, val_dataset, collate, output_dir: Path):
 
 
 #  Main 
-
 def main():
     logging.basicConfig(
         level=logging.WARNING,

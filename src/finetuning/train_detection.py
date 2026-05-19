@@ -1,5 +1,6 @@
 """
-LoRA fine-tuning script — Bloc 1: Hateful Meme Detection.
+LoRA fine-tuning script
+Bloc 1: Hateful Meme Detection.
 
 Architecture & design choices
 
@@ -21,11 +22,7 @@ Architecture & design choices
   Ref: Ouyang et al. (2022) "Training language models to follow instructions..."
        https://arxiv.org/abs/2203.02155
 
-- Rich SFT targets from detection_full.jsonl (produced by format_dataset.py):
-    hateful:     {classification, description, hate_type, hate_location}
-    non-hateful: {classification, description}
-  Including description (chain-of-thought) and hate_type/hate_location gives the
-  model more training signal per example and teaches structured reasoning.
+- Rich SFT targets from detection_full.jsonl : {classification, description, probability}
 
 - Meme text is included explicitly in the user turn ("Meme text: ...") to remove
   the OCR bottleneck, mirroring the approach in train_mitigation.py.
@@ -140,7 +137,7 @@ class HatefulMemeDataset(Dataset):
         user:      [image] + 'Meme text: "..."' + HATEFUL_DETECTION_PROMPT_FT_RICH
         assistant: {classification, description, probability}
 
-    No system prompt — matches the inference call in vlm.detect_hateful_meme.
+    No system prompt, matches the inference call in vlm.detect_hateful_meme.
     """
 
     def __init__(self, data: list, balance: bool = False):
@@ -182,7 +179,6 @@ class HatefulMemeDataset(Dataset):
 
 
 #  Collator 
-
 def _find_classification_token_positions(input_ids_row: list, prefix_len: int,
                                          label: int, tok) -> list:
     """
@@ -318,10 +314,9 @@ class WeightedLossTrainer(Trainer):
         return (loss, outputs) if return_outputs else loss
 
 
-#  Post-training generative eval
-
+# Post-training generative eval
 @torch.inference_mode()
-def evaluate_f1(model, processor, val_dataset, max_new_tokens: int = 128,
+def evaluate_f1(model, processor, val_dataset, max_new_tokens: int = 512,
                 output_dir: Path = None):
     """
     Runs generation on the val set and computes F1 / AUROC.
@@ -331,9 +326,6 @@ def evaluate_f1(model, processor, val_dataset, max_new_tokens: int = 128,
     A model can have low loss but still misclassify if it outputs a well-formatted
     JSON with the wrong label. Generative eval measures what matters at inference.
     Ref: Kiela et al. (2020) use AUROC as the primary metric for this benchmark.
-
-    max_new_tokens is bumped to 128 (vs 64 previously) to accommodate the richer
-    JSON response that now includes description + optional hate_type/hate_location.
     """
     model.eval()
     y_true, y_pred, y_prob = [], [], []
@@ -470,7 +462,6 @@ def main():
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token
 
-    # ── Model: QLoRA by default; --bf16 switches to full bfloat16 LoRA ───────────
     if args.bf16:
         quant_config = None
         logger.info("Loading model in bfloat16 (no quantisation, LoRA only)...")
