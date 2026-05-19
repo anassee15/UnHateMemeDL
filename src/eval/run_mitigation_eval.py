@@ -65,7 +65,7 @@ FIELDNAMES = [
     "prob_before", "prob_after",
     "detoxify_before", "detoxify_after",
     "hate_location", "severity",
-    "original_text", "replacement_text", "flux_prompt",
+    "original_text", "replacement_text", "diffusion_prompt",
     "bertscore_f1", "clip_score", "ssim", "mps",
     "mitigated_path", "error",
 ]
@@ -230,7 +230,7 @@ def run_judge(args):
                     row["severity"]        = mit_json.get("severity", "")
                     row["original_text"]   = (mit_json.get("original_text") or "").replace("\n", "\\n")
                     row["replacement_text"] = (mit_json.get("replacement_text") or "").replace("\n", "\\n")
-                    row["flux_prompt"]     = mit_json.get("flux_prompt", "")
+                    row["diffusion_prompt"] = mit_json.get("diffusion_prompt", "")
                 except Exception:
                     pass
 

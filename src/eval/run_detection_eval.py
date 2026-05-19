@@ -39,7 +39,13 @@ from pathlib import Path
 # Make pipeline modules importable
 sys.path.insert(0, str(Path(__file__).parent.parent / "unhate_pipeline"))
 
-from vlm import instantiate_vlm, detect_hateful_meme, detect_hate_type
+from vlm import (
+    instantiate_vlm,
+    load_cls_head,
+    detect_hateful_meme,
+    detect_hateful_meme_cls_head,
+    detect_hate_type,
+)
 from utils import parse_hateful_response, parse_hate_type_response
 
 FIELDNAMES = [
@@ -84,8 +90,18 @@ def run_inference(args):
 
     print(f"[info] {len(done)} already done, {len(todo)} remaining.", file=sys.stderr)
 
-    vlm, processor = instantiate_vlm(args.vlm_name, args.cache_dir)
+    vlm, processor = instantiate_vlm(args.vlm_name, args.cache_dir, args.adapter_path)
     print(f"[info] VLM loaded on {vlm.device}", file=sys.stderr)
+
+    # Load classification head if provided — detection becomes a forward pass,
+    # no generation. The generative path is used as fallback when head is absent.
+    cls_head = None
+    if args.cls_head_path:
+        cls_head = load_cls_head(vlm, args.cls_head_path)
+        print(f"[info] Detection mode: classification head ({args.cls_head_path})",
+              file=sys.stderr)
+    else:
+        print("[info] Detection mode: generative (VLM output parsing)", file=sys.stderr)
 
     write_header = not out_path.exists() or out_path.stat().st_size == 0
     with open(out_path, "a", newline="") as f:
@@ -98,27 +114,37 @@ def run_inference(args):
             print(f"\n[{i+1}/{len(todo)}] {img_path.name}", file=sys.stderr)
 
             row = {
-                "id":            sample["id"],
-                "img":           sample["img"],
-                "label_true":    sample["label"],
-                "text":          sample.get("text", "").replace("\n", " "),
-                "prob_pred":     "",
-                "label_pred":    "",
+                "id":             sample["id"],
+                "img":            sample["img"],
+                "label_true":     sample["label"],
+                "text":           sample.get("text", "").replace("\n", " "),
+                "prob_pred":      "",
+                "label_pred":     "",
                 "classification": "",
-                "description":   "",
-                "modality_type": "",
-                "error":         "",
+                "description":    "",
+                "modality_type":  "",
+                "error":          "",
             }
 
             # --- detection --------------------------------------------------
             try:
-                raw = detect_hateful_meme(vlm, processor, img_path)
-                is_hateful, prob, description = parse_hateful_response(raw)
-                row["prob_pred"]     = prob
-                row["label_pred"]    = 1 if prob >= 0.5 else 0
+                if cls_head is not None:
+                    # Forward pass only — no generation, no JSON to parse.
+                    # description stays empty (head produces no explanation).
+                    is_hateful, prob = detect_hateful_meme_cls_head(
+                        vlm, processor, cls_head, img_path
+                    )
+                else:
+                    # Generative path — VLM produces a JSON blob to parse.
+                    raw = detect_hateful_meme(vlm, processor, img_path)
+                    is_hateful, prob, description = parse_hateful_response(raw)
+                    row["description"] = description.replace("\n", " ")
+
+                row["prob_pred"]      = prob
+                row["label_pred"]     = 1 if prob >= 0.5 else 0
                 row["classification"] = "hateful" if is_hateful else "non-hateful"
-                row["description"]   = description.replace("\n", " ")
-                print(f"         prob={prob:.3f}  → {'HATEFUL' if is_hateful else 'ok'}", file=sys.stderr)
+                print(f"         prob={prob:.3f}  → {'HATEFUL' if is_hateful else 'ok'}",
+                      file=sys.stderr)
             except Exception as e:
                 print(f"[error] Detection failed: {e}", file=sys.stderr)
                 row["error"] = str(e)
@@ -171,6 +197,10 @@ def compute_metrics(args):
     print(sep)
     print("DETECTION METRICS")
     print(sep)
+    # Show which detection mode produced this CSV so comparisons are unambiguous
+    has_descriptions = any(r.get("description") for r in valid)
+    mode = "generative (VLM)" if has_descriptions else "classification head"
+    print(f"  Mode       : {mode}")
     print(f"  N          : {len(valid)}  ({y_true.sum()} hateful / {(~y_true.astype(bool)).sum()} non-hateful)")
     print(f"  AUROC      : {auroc:.4f}")
     print(f"  Macro-F1   : {macro_f1:.4f}")
@@ -216,10 +246,21 @@ def main():
     parser.add_argument("--jsonl",     required=True,  help="Path to eval JSONL file")
     parser.add_argument("--img_dir",   default=None,   help="Dataset root (images resolved as <img_dir>/<img field>)")
     parser.add_argument("--output",    default="report/detection_predictions.csv")
-    parser.add_argument("--vlm_name",  default="Qwen/Qwen3.6-27B")
+    parser.add_argument("--vlm_name",  default="google/gemma-4-31B-it")
     parser.add_argument("--cache_dir", default=None)
+    parser.add_argument("--adapter_path", default=None,
+                        help="LoRA adapter directory (checkpoints/detect/adapter_detect). "
+                             "Mutually exclusive with --cls_head_path.")
+    parser.add_argument("--cls_head_path", default=None,
+                        help="Path to classifier.pt from train_cls_head.py "
+                             "(e.g. checkpoints/cls_head/best_classifier.pt). "
+                             "When set, detection uses a forward pass instead of generation.")
+    parser.add_argument("--metrics_only",      action="store_true", help="Skip inference, only compute metrics from existing CSV")
     parser.add_argument("--modality_analysis", action="store_true", help="Run detect_hate_type on hateful images for per-modality F1")
     args = parser.parse_args()
+
+    if args.adapter_path and args.cls_head_path:
+        parser.error("--adapter_path and --cls_head_path are mutually exclusive")
 
     if not args.img_dir:
         parser.error("--img_dir is required")

@@ -29,15 +29,18 @@ def parse_hateful_response(response):
     if classification not in {"hateful", "non-hateful"}:
         raise ValueError(f"Invalid classification value: '{classification}'")
 
-    if probability_raw is None:
-        raise ValueError("Missing 'probability' field")
-
-    try:
-        probability = float(probability_raw)
-    except (TypeError, ValueError):
-        raise ValueError(f"Could not parse probability value: '{probability_raw}'")
-
     is_hateful = classification == "hateful"
+
+    if probability_raw is None:
+        # Fine-tuned models trained without probability in the target schema will
+        # omit this field. Fall back to the hard binary value from classification.
+        probability = 1.0 if is_hateful else 0.0
+    else:
+        try:
+            probability = float(probability_raw)
+        except (TypeError, ValueError):
+            raise ValueError(f"Could not parse probability value: '{probability_raw}'")
+
     return is_hateful, probability, description
 
 
@@ -117,10 +120,16 @@ def parse_prompt_generation(raw: str, fallback_prompt: str = "Preserve the image
         except Exception as e:
             return _fallback(fallback_prompt, f"Parse error: {e}")
 
-    # 5. Validate flux_prompt is a clean plain string
-    flux = parsed.get("flux_prompt", "")
-    if not isinstance(flux, str) or len(flux.strip()) < 10 or flux.strip().startswith("{"):
-        return _fallback(fallback_prompt, f"Invalid flux_prompt: '{flux[:80]}'")
+    # 5. Validate required fields.
+    diff = parsed.get("diffusion_prompt")
+    if not isinstance(diff, str) or len(diff.strip()) < 10 or diff.strip().startswith("{"):
+        snippet = "" if not isinstance(diff, str) else diff[:80]
+        return _fallback(fallback_prompt, f"Invalid diffusion_prompt: '{snippet}'")
+
+    _VALID_LOCATIONS = {"VISUAL_ONLY", "TEXT_ONLY", "COMBINED", "INTERSECTIONAL"}
+    hate_loc = parsed.get("hate_location")
+    if hate_loc not in _VALID_LOCATIONS:
+        return _fallback(fallback_prompt, f"Missing or invalid hate_location: '{hate_loc}'")
 
     return parsed
 
@@ -128,9 +137,10 @@ def parse_prompt_generation(raw: str, fallback_prompt: str = "Preserve the image
 def _fallback(prompt: str, reason: str) -> dict:
     print(f"[WARN] VLM parse failed: {reason}")
     return {
-        "hate_source": "parse_error", "hate_location": "VISUAL_ONLY",
-        "severity": "STRUCTURAL", "original_text": None,
-        "replacement_text": None, "strategy": "Fallback: no mitigation applied",
-        "flux_prompt": prompt, "expected_change": "Image unchanged due to parse error",
+        "hate_source": "parse_error",
+        "hate_location": "VISUAL_ONLY",
+        "diffusion_prompt": prompt,
+        "original_text": None,
+        "replacement_text": None,
         "_parse_error": reason,
     }
