@@ -248,6 +248,13 @@ def main():
     parser.add_argument("--output",    default="report/detection_predictions.csv")
     parser.add_argument("--vlm_name",  default="google/gemma-4-31B-it")
     parser.add_argument("--cache_dir", default=None)
+    parser.add_argument("--adapter_path", default=None,
+                        help="LoRA adapter directory (checkpoints/detect/adapter_detect). "
+                             "Mutually exclusive with --cls_head_path.")
+    parser.add_argument("--cls_head_path", default=None,
+                        help="Path to classifier.pt from train_cls_head.py "
+                             "(e.g. checkpoints/cls_head/best_classifier.pt). "
+                             "When set, detection uses a forward pass instead of generation.")
     parser.add_argument("--metrics_only",      action="store_true", help="Skip inference, only compute metrics from existing CSV")
     parser.add_argument("--modality_analysis", action="store_true", help="Run detect_hate_type on hateful images for per-modality F1")
     args = parser.parse_args()
