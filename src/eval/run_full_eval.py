@@ -55,8 +55,8 @@ from utils import parse_hateful_response, parse_prompt_generation
 MODELS = [
     "Qwen/Qwen3.6-27B",
     "Qwen/Qwen2.5-VL-7B-Instruct",
-    "google/gemma-4-27b-it",          # verify exact HF ID for Gemma4-31B-it
-    "google/paligemma2-3b-it-448",    # -it (instruction-tuned); -pt won't follow JSON prompts
+    "google/gemma-4-31B-it",          # verify exact HF ID — update if needed
+    "google/gemma-3-12b-it",    # smallest Qwen VL, same interface as other Qwen models
 ]
 
 JSONL_PATH   = "data/eval_data/eval_490_balanced.jsonl"
@@ -440,7 +440,8 @@ def compute_mitigation_metrics(mit_csv_path: Path, img_root: Path) -> dict:
         rows = list(csv.DictReader(f))
 
     hateful_rows = [r for r in rows
-                    if r.get("prob_after") and not r.get("error")
+                    if r.get("prob_after") and r.get("prob_before")
+                    and not r.get("error")
                     and int(r.get("label_true", 0)) == 1]
 
     if not hateful_rows:
