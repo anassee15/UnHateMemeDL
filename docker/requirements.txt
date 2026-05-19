@@ -13,3 +13,6 @@ huggingface_hub
 flash-linear-attention
 requests
 torchao
+scikit-learn
+bert-score
+scikit-image
