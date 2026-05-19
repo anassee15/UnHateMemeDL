@@ -66,7 +66,7 @@ FIELDNAMES = [
     "detoxify_before", "detoxify_after",
     "hate_location", "severity",
     "original_text", "replacement_text", "diffusion_prompt",
-    "bertscore_f1", "clip_score", "ssim",
+    "bertscore_f1", "clip_score", "ssim", "mps",
     "mitigated_path", "error",
 ]
 
@@ -325,6 +325,61 @@ def compute_ssim_scores(orig_paths: list[Path], mit_paths: list[Path]) -> list[f
     return scores
 
 
+def compute_mps_scores(
+    orig_img_paths: list[Path],
+    orig_texts: list[str],
+    mit_img_paths: list[Path],
+    repl_texts: list[str],
+) -> list[float]:
+    """MPS = cosine_sim(A, B) where:
+      A = normalise(CLIP(orig_img) + CLIP(orig_text))
+      B = normalise(CLIP(mit_img)  + CLIP(repl_text))
+    Measures how much the joint multimodal meaning is preserved after mitigation.
+    """
+    if not orig_img_paths:
+        return []
+    tf = _try_import("transformers")
+    if tf is None:
+        return []
+    model_name = "openai/clip-vit-base-patch32"
+    clip_model = tf.CLIPModel.from_pretrained(model_name)
+    clip_proc  = tf.CLIPProcessor.from_pretrained(model_name)
+    clip_model.eval()
+
+    scores = []
+    for orig_path, orig_text, mit_path, repl_text in zip(
+            orig_img_paths, orig_texts, mit_img_paths, repl_texts):
+        try:
+            orig_img = Image.open(orig_path).convert("RGB")
+            mit_img  = Image.open(mit_path).convert("RGB")
+            with torch.no_grad():
+                inp = clip_proc(images=[orig_img], return_tensors="pt")
+                orig_img_e = clip_model.get_image_features(**inp)
+                orig_img_e = orig_img_e / orig_img_e.norm(dim=-1, keepdim=True)
+
+                inp = clip_proc(text=[orig_text], return_tensors="pt", padding=True, truncation=True)
+                orig_txt_e = clip_model.get_text_features(**inp)
+                orig_txt_e = orig_txt_e / orig_txt_e.norm(dim=-1, keepdim=True)
+
+                inp = clip_proc(images=[mit_img], return_tensors="pt")
+                mit_img_e = clip_model.get_image_features(**inp)
+                mit_img_e = mit_img_e / mit_img_e.norm(dim=-1, keepdim=True)
+
+                inp = clip_proc(text=[repl_text], return_tensors="pt", padding=True, truncation=True)
+                mit_txt_e = clip_model.get_text_features(**inp)
+                mit_txt_e = mit_txt_e / mit_txt_e.norm(dim=-1, keepdim=True)
+
+            A = orig_img_e + orig_txt_e
+            B = mit_img_e  + mit_txt_e
+            A = A / A.norm(dim=-1, keepdim=True)
+            B = B / B.norm(dim=-1, keepdim=True)
+            scores.append((A * B).sum().item())
+        except Exception as e:
+            print(f"[warn] MPS failed for {orig_path.name}: {e}", file=sys.stderr)
+            scores.append(float("nan"))
+    return scores
+
+
 def compute_metrics(args):
     out_path = Path(args.output_csv)
     det_path = Path(args.det_csv)
@@ -390,30 +445,42 @@ def compute_metrics(args):
     print("MITIGATION METRICS — AXIS B: Content Preservation")
     print(sep)
 
+    bert_by_id: dict = {}
+    clip_by_id: dict = {}
+    ssim_by_id: dict = {}
+
     # BERTScore (text pairs only)
     if text_rows:
         bs_scores = compute_bertscore(orig_texts, repl_texts)
         if bs_scores:
+            for r, s in zip(text_rows, bs_scores):
+                bert_by_id[r["id"]] = s
             print(f"  BERTScore F1 (n={len(text_rows)}): {np.mean(bs_scores):.4f}")
 
     # CLIPScore (mitigated image + replacement text)
     clip_rows = [r for r in hateful_rows
                  if r.get("replacement_text") and r.get("mitigated_path")]
+    clip_scores: list = []
     if clip_rows:
         mit_paths = [Path(r["mitigated_path"]) for r in clip_rows]
         clip_texts = [r["replacement_text"].replace("\\n", " ") for r in clip_rows]
         clip_scores = compute_clip_scores(mit_paths, clip_texts)
         if clip_scores:
+            for r, s in zip(clip_rows, clip_scores):
+                clip_by_id[r["id"]] = s
             arr = np.array([s for s in clip_scores if not np.isnan(s)])
             print(f"  CLIPScore      (n={len(arr)}): {arr.mean():.4f}")
 
     # SSIM (original vs mitigated)
+    ssim_rows: list = []
     if img_root:
         ssim_rows = [r for r in hateful_rows if r.get("mitigated_path")]
         orig_paths = [img_root / r["img"] for r in ssim_rows]
         mit_paths  = [Path(r["mitigated_path"]) for r in ssim_rows]
         ssim_scores = compute_ssim_scores(orig_paths, mit_paths)
         if ssim_scores:
+            for r, s in zip(ssim_rows, ssim_scores):
+                ssim_by_id[r["id"]] = s
             arr = np.array([s for s in ssim_scores if not np.isnan(s)])
             print(f"  SSIM           (n={len(arr)}): {arr.mean():.4f}")
 
@@ -425,6 +492,36 @@ def compute_metrics(args):
         cs = np.array(clip_scores)
         joint = ((prob_after[:len(cs)] < 0.5) & (cs > clip_threshold)).mean() * 100
         print(f"\n  % non-hateful AND coherent (CLIPScore>{clip_threshold}): {joint:.1f}%")
+
+    # ------------------------------------------------------------------
+    # MPS — Multimodal Preservation Score
+    # ------------------------------------------------------------------
+    mps_by_id: dict = {}
+    if img_root:
+        mps_rows = [r for r in hateful_rows
+                    if r.get("original_text") and r.get("replacement_text")
+                    and r.get("mitigated_path")]
+        if mps_rows:
+            mps_scores = compute_mps_scores(
+                orig_img_paths=[img_root / r["img"]                          for r in mps_rows],
+                orig_texts=    [r["original_text"].replace("\\n", " ")      for r in mps_rows],
+                mit_img_paths= [Path(r["mitigated_path"])                    for r in mps_rows],
+                repl_texts=    [r["replacement_text"].replace("\\n", " ")   for r in mps_rows],
+            )
+            for r, s in zip(mps_rows, mps_scores):
+                mps_by_id[r["id"]] = s
+
+    if mps_by_id:
+        valid_mps = [v for v in mps_by_id.values() if not np.isnan(float(v))]
+        print(f"\n{sep}")
+        print("MITIGATION METRICS — MPS: Multimodal Preservation Score")
+        print(sep)
+        print(f"  A = normalise(CLIP(orig_img)  + CLIP(orig_text))")
+        print(f"  B = normalise(CLIP(mit_img)   + CLIP(repl_text))")
+        print(f"  MPS = cosine_sim(A, B)   [range −1 … 1, higher = better]")
+        print(f"  N images     : {len(valid_mps)}")
+        print(f"  MPS (mean)   : {np.mean(valid_mps):.4f}")
+        print(f"  MPS (median) : {np.median(valid_mps):.4f}")
 
     # ------------------------------------------------------------------
     # Over-sanitization (label=0)
@@ -448,16 +545,18 @@ def compute_metrics(args):
     pareto_path = Path(args.output_csv).with_suffix(".pareto.csv")
     pareto_rows = []
     for j, r in enumerate(hateful_rows):
+        rid = r["id"]
         entry = {
-            "id":          r["id"],
+            "id":          rid,
             "label_true":  r["label_true"],
             "prob_before": r.get("prob_before", ""),
             "prob_after":  r.get("prob_after", ""),
             "tr_pct":      f"{tr_per_image[j]*100:.2f}" if j < len(tr_per_image) else "",
             "hate_location": r.get("hate_location", ""),
-            "bertscore_f1": "",
-            "clip_score":   "",
-            "ssim":         "",
+            "bertscore_f1": f"{bert_by_id[rid]:.4f}" if rid in bert_by_id else "",
+            "clip_score":   f"{clip_by_id[rid]:.4f}" if rid in clip_by_id else "",
+            "ssim":         f"{ssim_by_id[rid]:.4f}" if rid in ssim_by_id else "",
+            "mps":          f"{mps_by_id[rid]:.4f}"  if rid in mps_by_id  else "",
         }
         pareto_rows.append(entry)
     with open(pareto_path, "w", newline="") as f:
