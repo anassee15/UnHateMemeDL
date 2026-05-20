@@ -1,0 +1,11 @@
+{
+  "image_path": "../../data/01452.png",
+  "hateful_detection_raw": "{\n  \"description\": \"The meme features a relaxed chimpanzee and text expressing the feeling after a long day at work. There is no attack, dehumanization, or negative sentiment directed at any protected group or individual characteristics.\",\n  \"classification\": \"non-hateful\",\n  \"probability\": 0.0\n}",
+  "hateful_detection_parsed": {
+    "is_hateful": false,
+    "probability": 0.0,
+    "description": "The meme features a relaxed chimpanzee and text expressing the feeling after a long day at work. There is no attack, dehumanization, or negative sentiment directed at any protected group or individual characteristics."
+  },
+  "status": "not_hateful",
+  "mitigated_image_path": "../../data/mitigated/01452_mitigated.png"
+}

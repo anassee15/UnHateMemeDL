@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 src/eval/run_detection_eval.py --help)",
+      "Bash(python3 src/eval/run_detection_eval.py --jsonl data/eval_data/eval_490_balanced.jsonl --img_dir data/eval_data --output report/baseline.csv --vlm_name Qwen/Qwen3.6-27B --cache_dir /scratch/hf_cache --help)",
+      "Bash(python3 *)",
+      "Bash(pip index *)",
+      "Bash(pip install *)",
+      "Bash(sudo pip install \"transformers==5.8.1\")",
+      "Bash(sudo /opt/venv/bin/pip install \"transformers==5.8.1\")"
+    ]
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "image_path": "../../data/02584.png",
+  "hateful_detection_raw": "{\n  \"description\": \"The meme uses a caricature of a Jewish man and text that suggests the subject is inherently disgusting and relies on laws to prevent hatred, which constitutes a direct attack and statement of inferiority based on religion/ethnicity.\",\n  \"classification\": \"hateful\",\n  \"probability\": 0.98\n}",
+  "hateful_detection_parsed": {
+    "is_hateful": true,
+    "probability": 0.98,
+    "description": "The meme uses a caricature of a Jewish man and text that suggests the subject is inherently disgusting and relies on laws to prevent hatred, which constitutes a direct attack and statement of inferiority based on religion/ethnicity."
+  },
+  "diffusion_prompt_raw": "```json\n{\n  \"hate_source\": \"The text overlay promotes antisemitic conspiracy theories by claiming Jewish people require laws to prevent hate and are inherently 'disgusting', directly targeting a religious group for abuse.\",\n  \"hate_location\": \"COMBINED\",\n  \"severity\": \"SURGICAL_BOTH\",\n  \"original_text\": \"imagine being so disgustsing there have to be laws to try to stop normal people from hating you\",\n  \"replacement_text\": \"Imagine being so misunderstood there have to be laws to try to stop normal people from laughing at you\",\n  \"strategy\": \"Rewrite the text to target a neutral, absurd concept ('misunderstood'/'laughing') instead of a protected group, while visually neutralizing specific religious iconography (tallit and Star of David) into generic clothing elements to avoid stereotyping.\",\n  \"flux_prompt\": \"Analyze the image and neutralize the character's religious identity to remove stereotyping. Transform the specific religious prayer shawl (tallit) into a generic white scarf or robe with simple blue trim. Replace the Star of David necklace with a neutral golden heart or circle pendant. Ensure the character remains a cartoon elderly man with a white beard, glasses, and top hat, sitting on a bench holding a candelabra, but strictly devoid of specific religious symbols. Preserve the cartoon style, lighting, and composition.\",\n  \"expected_change\": \"The image will show the same character and layout, but the text will be changed to a self-deprecating or absurd statement, and the specific Jewish religious clothing and symbols will be replaced with generic equivalents, removing the antisemitic nature of the meme.\"\n}\n```",
+  "mitigation_parsed": {
+    "hate_source": "The text overlay promotes antisemitic conspiracy theories by claiming Jewish people require laws to prevent hate and are inherently 'disgusting', directly targeting a religious group for abuse.",
+    "hate_location": "COMBINED",
+    "severity": "SURGICAL_BOTH",
+    "original_text": "imagine being so disgustsing there have to be laws to try to stop normal people from hating you",
+    "replacement_text": "Imagine being so misunderstood there have to be laws to try to stop normal people from laughing at you",
+    "strategy": "Rewrite the text to target a neutral, absurd concept ('misunderstood'/'laughing') instead of a protected group, while visually neutralizing specific religious iconography (tallit and Star of David) into generic clothing elements to avoid stereotyping.",
+    "flux_prompt": "Analyze the image and neutralize the character's religious identity to remove stereotyping. Transform the specific religious prayer shawl (tallit) into a generic white scarf or robe with simple blue trim. Replace the Star of David necklace with a neutral golden heart or circle pendant. Ensure the character remains a cartoon elderly man with a white beard, glasses, and top hat, sitting on a bench holding a candelabra, but strictly devoid of specific religious symbols. Preserve the cartoon style, lighting, and composition.",
+    "expected_change": "The image will show the same character and layout, but the text will be changed to a self-deprecating or absurd statement, and the specific Jewish religious clothing and symbols will be replaced with generic equivalents, removing the antisemitic nature of the meme."
+  },
+  "status": "mitigated",
+  "mitigated_image_path": "../../data/mitigated/02584_mitigated.png"
+}

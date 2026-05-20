@@ -1,0 +1,80 @@
+PIPELINE = "baseline"  # options: "baseline", "affect", "categorized"
+
+# IMPORTANT: only stdlib imports here at module level.
+# prompt.py imports PIPELINE from this module, so any non-stdlib import here
+# would be triggered during the vlm → prompt → main circular import chain,
+# which would break things. Heavy imports (torch, vlm, diffusion, diffusers)
+# are kept inside run_pipeline() and main() where they are actually needed.
+
+import sys
+import argparse
+from pathlib import Path
+
+
+def run_pipeline(vlm, vlm_processor, diffusion_model, image_path):
+    import torch
+    from diffusers.utils import load_image
+    from diffusion import instantiate_diffusion, mitigate_image
+    from utils import parse_prompt_generation, parse_hateful_response
+    from vlm import get_diffusion_prompt, detect_hateful_meme
+
+    image = load_image(str(image_path))
+    mitigated_dir = image_path.parent / "mitigated"
+
+    hateful_response = detect_hateful_meme(vlm, vlm_processor, image_path, pipeline=PIPELINE)
+    print(f"\nHateful detection output:\n{hateful_response}\n")
+    is_hateful, probability, description = parse_hateful_response(hateful_response)
+
+    if probability < 0.5:
+        print("The meme is not hateful.")
+        mitigated_output_path = mitigated_dir / f"{image_path.stem}_mitigated.png"
+        image.save(mitigated_output_path)
+        return
+
+    print(f"[info] Generating prompt for diffusion model...", file=sys.stderr)
+    diffusion_prompt = get_diffusion_prompt(vlm, vlm_processor, image_path)
+    print(f"\nGenerated diffusion prompt:\n{diffusion_prompt}\n")
+    mitigation = parse_prompt_generation(diffusion_prompt)
+
+    generator = torch.Generator(device="cuda" if torch.cuda.is_available() else "cpu").manual_seed(42)
+    mitigated_image = mitigate_image(diffusion_model, image, mitigation, generator=generator)
+    mitigated_image.save(mitigated_dir / f"{image_path.stem}_mitigated.png")
+
+
+def main():
+    import torch
+    from diffusers.utils import load_image
+    from vlm import instantiate_vlm
+    from diffusion import instantiate_diffusion
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--vlm_name", required=False, default="Qwen/Qwen3.6-27B")
+    parser.add_argument("--diffusion_model_name", required=False, default="black-forest-labs/FLUX.2-klein-9B")
+    parser.add_argument("--data_path", required=False, default="data/")
+    parser.add_argument("--cache_dir", default=None)
+    args = parser.parse_args()
+
+    print(f"[info] Starting inference with model: {args.vlm_name}", file=sys.stderr)
+    print(f"[info] Data path: {args.data_path}", file=sys.stderr)
+    print(f"[info] Pipeline: {PIPELINE}", file=sys.stderr)
+
+    vlm, vlm_processor = instantiate_vlm(args.vlm_name, args.cache_dir)
+    print(f"[info] Model loaded on device: {vlm.device}", file=sys.stderr)
+
+    print(f"[info] Loading diffusion model: {args.diffusion_model_name}", file=sys.stderr)
+    diffusion_model = instantiate_diffusion(args.diffusion_model_name, cache_dir=args.cache_dir)
+
+    image_paths = sorted(Path(args.data_path).glob("*.png"))
+    if not image_paths:
+        print(f"[error] No .png images found in: {args.data_path}", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"[info] Found {len(image_paths)} image(s).", file=sys.stderr)
+
+    for image_path in image_paths:
+        print(f"\n[info] Processing image: {image_path}", file=sys.stderr)
+        run_pipeline(vlm, vlm_processor, diffusion_model, image_path)
+
+
+if __name__ == "__main__":
+    main()

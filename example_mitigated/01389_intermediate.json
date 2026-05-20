@@ -1,0 +1,11 @@
+{
+  "image_path": "../../data/01389.png",
+  "hateful_detection_raw": "{\n  \"description\": \"The meme features a person affectionately holding a cat with humorous text about taking the cat to the mall. There is no hate speech, no attack on any protected group, and no negative connotations.\",\n  \"classification\": \"non-hateful\",\n  \"probability\": 0.0\n}",
+  "hateful_detection_parsed": {
+    "is_hateful": false,
+    "probability": 0.0,
+    "description": "The meme features a person affectionately holding a cat with humorous text about taking the cat to the mall. There is no hate speech, no attack on any protected group, and no negative connotations."
+  },
+  "status": "not_hateful",
+  "mitigated_image_path": "../../data/mitigated/01389_mitigated.png"
+}

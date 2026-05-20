@@ -1,0 +1,22 @@
+{
+  "image_path": "../../data/02561.png",
+  "hateful_detection_raw": "{\n  \"description\": \"The meme attributes violent criminal actions ('rape, pillage, riot') and negative social behaviors ('stealing welfare') to the individual depicted, who implies a specific ethnic or immigrant demographic through the text 'coming to america'. This constitutes a hateful attack based on ethnicity and immigration status by dehumanizing the group and associating them with violence and societal harm.\",\n  \"classification\": \"hateful\",\n  \"probability\": 1.0\n}",
+  "hateful_detection_parsed": {
+    "is_hateful": true,
+    "probability": 1.0,
+    "description": "The meme attributes violent criminal actions ('rape, pillage, riot') and negative social behaviors ('stealing welfare') to the individual depicted, who implies a specific ethnic or immigrant demographic through the text 'coming to america'. This constitutes a hateful attack based on ethnicity and immigration status by dehumanizing the group and associating them with violence and societal harm."
+  },
+  "diffusion_prompt_raw": "{\n  \"hate_source\": \"The text promotes violent xenophobia, threatening rape and pillage directed at the nation, while the visual uses an ethnic stereotype to dehumanize immigrants.\",\n  \"hate_location\": \"COMBINED\",\n  \"severity\": \"SURGICAL_BOTH\",\n  \"original_text\": \"we are coming to america\\none way or another!\\n\\nwe will rape, pillage,\\nriot & reap havoc\\non your nation while\\nstealing your welfare\",\n  \"replacement_text\": \"we are coming for your heart\\none way or another!\\n\\nwe will romance, serenade,\\nconquer & steal your soul\\nwhile eating all your tacos\",\n  \"strategy\": \"Redirect the 'invasion' narrative from violent hatred to an absurdist, humorous 'invasion' of food lovers/tourists. Replace the threatening text with a playful declaration of love and food theft. Visually, replace the aggressive subject with a friendly, excited tourist archetype to match the new 'taco lover' narrative.\",\n  \"flux_prompt\": \"Replace the young man in the military camouflage jacket with a cheerful, smiling young man wearing a casual Hawaiian shirt and a backpack, looking excitedly at the camera. He should look like a friendly tourist. Keep the large American flag background exactly the same. Remove the original text overlays completely and fill those areas with the appropriate background texture or clothing texture to make the image clean and text-free, preserving the original composition and lighting.\",\n  \"expected_change\": \"The image will look identical in background and layout, but the subject will be transformed from a threatening figure into a happy tourist, and all hateful text will be completely removed.\"\n}",
+  "mitigation_parsed": {
+    "hate_source": "The text promotes violent xenophobia, threatening rape and pillage directed at the nation, while the visual uses an ethnic stereotype to dehumanize immigrants.",
+    "hate_location": "COMBINED",
+    "severity": "SURGICAL_BOTH",
+    "original_text": "we are coming to america\none way or another!\n\nwe will rape, pillage,\nriot & reap havoc\non your nation while\nstealing your welfare",
+    "replacement_text": "we are coming for your heart\none way or another!\n\nwe will romance, serenade,\nconquer & steal your soul\nwhile eating all your tacos",
+    "strategy": "Redirect the 'invasion' narrative from violent hatred to an absurdist, humorous 'invasion' of food lovers/tourists. Replace the threatening text with a playful declaration of love and food theft. Visually, replace the aggressive subject with a friendly, excited tourist archetype to match the new 'taco lover' narrative.",
+    "flux_prompt": "Replace the young man in the military camouflage jacket with a cheerful, smiling young man wearing a casual Hawaiian shirt and a backpack, looking excitedly at the camera. He should look like a friendly tourist. Keep the large American flag background exactly the same. Remove the original text overlays completely and fill those areas with the appropriate background texture or clothing texture to make the image clean and text-free, preserving the original composition and lighting.",
+    "expected_change": "The image will look identical in background and layout, but the subject will be transformed from a threatening figure into a happy tourist, and all hateful text will be completely removed."
+  },
+  "status": "mitigated",
+  "mitigated_image_path": "../../data/mitigated/02561_mitigated.png"
+}

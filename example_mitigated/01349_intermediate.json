@@ -1,0 +1,21 @@
+{
+  "image_path": "../../data/01349.png",
+  "hateful_detection_raw": "{\n  \"description\": \"The meme pairs an image of Adolf Hitler with a young girl (likely his niece Geli Raubal) and text referencing the 'gold star' (yellow badge) Jews were forced to wear during the Holocaust. This juxtaposition mocks the suffering of Jewish victims by using Hitler's image and words in a context that trivializes and mocks a historical genocide.\",\n  \"classification\": \"hateful\",\n  \"probability\": 0.99\n}",
+  "hateful_detection_parsed": {
+    "is_hateful": true,
+    "probability": 0.99,
+    "description": "The meme pairs an image of Adolf Hitler with a young girl (likely his niece Geli Raubal) and text referencing the 'gold star' (yellow badge) Jews were forced to wear during the Holocaust. This juxtaposition mocks the suffering of Jewish victims by using Hitler's image and words in a context that trivializes and mocks a historical genocide."
+  },
+  "diffusion_prompt_raw": "{\n  \"hate_source\": \"The text uses 'gold star' as a dark euphemism for the yellow Star of David forced upon Jewish victims of the Holocaust, combined with the image of a Nazi leader to create antisemitic genocide humor.\",\n  \"hate_location\": \"COMBINED\",\n  \"severity\": \"SURGICAL_BOTH\",\n  \"original_text\": \"girl you're so special\\ni'm gonna give you a gold star\",\n  \"replacement_text\": \"girl you're so special\\ni'm gonna make you a princess\",\n  \"strategy\": \"Transform the image of Adolf Hitler into a generic benevolent grandfather figure to remove the genocidal context, while replacing the antisemitic text with a wholesome compliment about royalty.\",\n  \"flux_prompt\": \"Replace the face and upper body of the man on the left with that of a kind, gentle, older grandfatherly figure wearing a vintage tweed jacket and a warm smile, looking down affectionately at the child. Remove all specific identifying features of the original man. Preserve the black and white vintage photography style, the background field setting, the little girl's appearance, and the composition exactly.\"\n}",
+  "mitigation_parsed": {
+    "hate_source": "The text uses 'gold star' as a dark euphemism for the yellow Star of David forced upon Jewish victims of the Holocaust, combined with the image of a Nazi leader to create antisemitic genocide humor.",
+    "hate_location": "COMBINED",
+    "severity": "SURGICAL_BOTH",
+    "original_text": "girl you're so special\ni'm gonna give you a gold star",
+    "replacement_text": "girl you're so special\ni'm gonna make you a princess",
+    "strategy": "Transform the image of Adolf Hitler into a generic benevolent grandfather figure to remove the genocidal context, while replacing the antisemitic text with a wholesome compliment about royalty.",
+    "flux_prompt": "Replace the face and upper body of the man on the left with that of a kind, gentle, older grandfatherly figure wearing a vintage tweed jacket and a warm smile, looking down affectionately at the child. Remove all specific identifying features of the original man. Preserve the black and white vintage photography style, the background field setting, the little girl's appearance, and the composition exactly."
+  },
+  "status": "mitigated",
+  "mitigated_image_path": "../../data/mitigated/01349_mitigated.png"
+}
