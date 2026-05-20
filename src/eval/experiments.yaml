@@ -33,51 +33,6 @@ experiments:
         adapter_path: checkpoints/detection_qwen2_5_lora/adapter_detect/
 
   lora_mitigate:
-    description: "Detection + mitigation with LoRA adapters"
-    run_mitigation: true
-    models:
-      - model: google/gemma-4-31B-it
-        adapter_path: checkpoints/detection_gemma4_lora/adapter_detect/
-        mitigation_adapter_path: checkpoints/mitigation_gemma4_lora/
-      - model: Qwen/Qwen2.5-VL-7B-Instruct
-        adapter_path: checkpoints/detection_qwen2_5_lora/adapter_detect/
-        mitigation_adapter_path: checkpoints/mitigation_qwen2_5_lora/
-
-# Configuration for multi-experiment grid evaluation
-# Usage: python run_experiment_grid.py --config experiments.yaml --n_reps 3
-
-n_reps: 3
-
-experiments:
-  baseline:
-    description: "Baseline detection + mitigation (no adapters)"
-    run_mitigation: true
-    models:
-      - google/gemma-4-31B-it
-      - Qwen/Qwen3.6-27B
-      - Qwen/Qwen2.5-VL-7B-Instruct
-
-  cls_head:
-    description: "Detection with classification head (no mitigation)"
-    run_mitigation: false
-    models:
-      - model: google/gemma-4-31B-it
-        cls_head_path: checkpoints/cls_head_gemma4/best_classifier.pt
-      - model: Qwen/Qwen3.6-27B
-        cls_head_path: checkpoints/cls_head_qwen3_6/best_classifier.pt
-      - model: Qwen/Qwen2.5-VL-7B-Instruct
-        cls_head_path: checkpoints/cls_head_qwen2_5/best_classifier.pt
-
-  lora_detect:
-    description: "Detection with LoRA adapter (no mitigation)"
-    run_mitigation: false
-    models:
-      - model: google/gemma-4-31B-it
-        adapter_path: checkpoints/detection_gemma4_lora/adapter_detect/
-      - model: Qwen/Qwen2.5-VL-7B-Instruct
-        adapter_path: checkpoints/detection_qwen2_5_lora/adapter_detect/
-
-  lora_mitigate:
     description: "Mitigation with LoRA adapter (skip detection)"
     run_mitigation: true
     mitigation_only: true   # Skip detection, test mitigation pipeline only
