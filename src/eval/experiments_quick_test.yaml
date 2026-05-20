@@ -1,0 +1,11 @@
+# Quick test config — for rapid iteration
+# Usage: python run_experiment_grid.py --config experiments_quick_test.yaml
+
+n_reps: 1  # Single rep for speed
+
+experiments:
+  baseline:
+    description: "Baseline detection only (quick test)"
+    run_mitigation: false
+    models:
+      - google/gemma-4-31B-it

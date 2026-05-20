@@ -16,3 +16,4 @@ torchao
 scikit-learn
 bert-score
 scikit-image
+pyyaml
