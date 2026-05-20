@@ -64,9 +64,9 @@ HATEFUL_DETECTION_PROMPT_FT_RICH = (
     "}\n\n"
     "Rules: classification must be exactly 'hateful' or 'non-hateful'. "
     "description must be one concise sentence. "
-    "probability must be a numeric value in [0, 1] reflecting confidence that the meme is hateful:\n",
-    "- < 0.3 = clearly benign\n",
-    "- > 0.7 = clearly hateful\n",
+    "probability must be a numeric value in [0, 1] reflecting confidence that the meme is hateful:\n"
+    "- < 0.3 = clearly benign\n"
+    "- > 0.7 = clearly hateful\n"
     "- 0.3-0.6 = ambiguous\n"
 )
 

@@ -70,8 +70,8 @@ MIT_FIELDNAMES = [
     "id", "img", "label_true",
     "prob_before", "prob_after",
     "detoxify_before", "detoxify_after",
-    "hate_location", "severity",
-    "original_text", "replacement_text", "flux_prompt",
+    "hate_source", "hate_location",
+    "original_text", "replacement_text", "diffusion_prompt",
     "bertscore_f1", "clip_score", "ssim", "mps",
     "mitigated_path", "error",
     "t_prompt_s", "t_diffusion_s",
@@ -275,7 +275,7 @@ def run_mitigation_prompts(
     out_dir: Path,
 ) -> None:
     det: dict = {}
-    if det_path.exists():
+    if det_path is not None and det_path.exists():
         with open(det_path, newline="") as f:
             det = {int(r["id"]): r for r in csv.DictReader(f)}
 
@@ -322,7 +322,13 @@ def run_mitigation_diffusion(
     samples: list[dict], img_root: Path,
     mit_csv_path: Path, out_dir: Path,
     generator: torch.Generator,
+    det_path: Path | None = None,
 ) -> None:
+    det: dict = {}
+    if det_path is not None and det_path.exists():
+        with open(det_path, newline="") as f:
+            det = {int(r["id"]): r for r in csv.DictReader(f)}
+
     hateful = [s for s in samples if int(s["label"]) == 1]
     done_ids = load_existing_ids(mit_csv_path)
     todo = [s for s in hateful if int(s["id"]) not in done_ids]
@@ -346,6 +352,9 @@ def run_mitigation_diffusion(
         row["img"]        = sample["img"]
         row["label_true"] = sample["label"]
         row["mitigated_path"] = str(mit_path)
+        det_row = det.get(int(sid))
+        if det_row and det_row.get("prob_pred"):
+            row["prob_before"] = det_row["prob_pred"]
 
         try:
             if not jpath.exists():
@@ -377,11 +386,11 @@ def run_mitigation_diffusion(
             row["t_diffusion_s"] = f"{time.perf_counter() - t_d:.3f}"
             mitigated.save(mit_path)
 
+            row["hate_source"]      = mitigation_data.get("hate_source", "")
             row["hate_location"]    = mitigation_data.get("hate_location", "")
-            row["severity"]         = mitigation_data.get("severity", "")
             row["original_text"]    = (mitigation_data.get("original_text") or "").replace("\n", "\\n")
             row["replacement_text"] = (mitigation_data.get("replacement_text") or "").replace("\n", "\\n")
-            row["flux_prompt"]      = mitigation_data.get("flux_prompt", "")
+            row["diffusion_prompt"] = mitigation_data.get("diffusion_prompt", "")
             row["t_prompt_s"]       = "0"
 
             print(f"    diffusion={row['t_diffusion_s']}s", file=sys.stderr)
@@ -444,7 +453,7 @@ def compute_mitigation_metrics(mit_csv_path: Path, img_root: Path) -> dict:
         rows = list(csv.DictReader(f))
 
     hateful_rows = [r for r in rows
-                    if r.get("prob_after") and r.get("prob_before")
+                    if r.get("prob_after")
                     and not r.get("error")
                     and int(r.get("label_true", 0)) == 1]
 
@@ -452,11 +461,17 @@ def compute_mitigation_metrics(mit_csv_path: Path, img_root: Path) -> dict:
         print("[step5] No valid hateful rows in mitigation CSV.", file=sys.stderr)
         return {}
 
-    prob_before = np.array([float(r["prob_before"]) for r in hateful_rows if r.get("prob_before")], dtype=float)
-    prob_after  = np.array([float(r["prob_after"])  for r in hateful_rows], dtype=float)
-    with np.errstate(divide="ignore", invalid="ignore"):
-        tr_per_img = np.where(prob_before > 0, (prob_before - prob_after) / prob_before, 0.0)
+    prob_after = np.array([float(r["prob_after"]) for r in hateful_rows], dtype=float)
     pct_nonhateful = (prob_after < 0.5).mean() * 100
+
+    # TR% only when prob_before is available (not in mitigation_only runs)
+    tr_rows = [r for r in hateful_rows if r.get("prob_before")]
+    tr_per_img = np.array([])
+    if tr_rows:
+        prob_before = np.array([float(r["prob_before"]) for r in tr_rows], dtype=float)
+        prob_after_tr = np.array([float(r["prob_after"]) for r in tr_rows], dtype=float)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            tr_per_img = np.where(prob_before > 0, (prob_before - prob_after_tr) / prob_before, 0.0)
 
     text_rows = [r for r in hateful_rows if r.get("original_text") and r.get("replacement_text")]
     orig_texts = [r["original_text"].replace("\\n", " ") for r in text_rows]
@@ -547,9 +562,11 @@ def compute_mitigation_metrics(mit_csv_path: Path, img_root: Path) -> dict:
     sep = "=" * 52
     print(f"\n{sep}\nMITIGATION METRICS\n{sep}", file=sys.stderr)
     print(f"  N mitigated      : {len(hateful_rows)}")
-    print(f"  Mean prob_before : {prob_before.mean():.4f}")
+    if tr_rows:
+        print(f"  Mean prob_before : {prob_before.mean():.4f}")
     print(f"  Mean prob_after  : {prob_after.mean():.4f}")
-    print(f"  Mean TR%         : {tr_per_img.mean()*100:.1f}%")
+    if tr_per_img.size:
+        print(f"  Mean TR%         : {tr_per_img.mean()*100:.1f}%")
     print(f"  % non-hateful    : {pct_nonhateful:.1f}%")
     print(f"  BERTScore F1     : {mean_bert:.4f}" if not np.isnan(mean_bert) else "  BERTScore F1     : n/a")
     print(f"  CLIPScore        : {mean_clip:.4f}" if not np.isnan(mean_clip) else "  CLIPScore        : n/a")
@@ -562,20 +579,20 @@ def compute_mitigation_metrics(mit_csv_path: Path, img_root: Path) -> dict:
     def _r(v): return round(float(v), 4) if not np.isnan(float(v)) else ""
 
     return {
-        "n_mitigated":       len(hateful_rows),
-        "mean_prob_before":  _r(prob_before.mean()),
-        "mean_prob_after":   _r(prob_after.mean()),
-        "mean_tr_pct":       _r(tr_per_img.mean() * 100),
+        "n_mitigated":          len(hateful_rows),
+        "mean_prob_before":     _r(prob_before.mean()) if tr_rows else "",
+        "mean_prob_after":      _r(prob_after.mean()),
+        "mean_tr_pct":          _r(tr_per_img.mean() * 100) if tr_per_img.size else "",
         "pct_nonhateful_after": _r(pct_nonhateful),
-        "mean_bertscore_f1": _r(mean_bert),
-        "mean_clip_score":   _r(mean_clip),
-        "mean_ssim":         _r(mean_ssim),
-        "mean_mps":          _r(mean_mps),
-        "prompt_mean_s":     _r(tp_arr.mean()),
-        "prompt_std_s":      _r(tp_arr.std()),
-        "diffusion_mean_s":  _r(td_arr.mean()),
-        "diffusion_std_s":   _r(td_arr.std()),
-        "mit_total_mean_s":  _r((tp_arr + td_arr).mean()),
+        "mean_bertscore_f1":    _r(mean_bert),
+        "mean_clip_score":      _r(mean_clip),
+        "mean_ssim":            _r(mean_ssim),
+        "mean_mps":             _r(mean_mps),
+        "prompt_mean_s":        _r(tp_arr.mean()),
+        "prompt_std_s":         _r(tp_arr.std()),
+        "diffusion_mean_s":     _r(td_arr.mean()),
+        "diffusion_std_s":      _r(td_arr.std()),
+        "mit_total_mean_s":     _r((tp_arr + td_arr).mean()),
     }
 
 
@@ -711,6 +728,7 @@ def normalize_config(config: dict) -> dict:
                 })
         experiments[eval_type] = {
             "run_mitigation": exp_cfg.get("run_mitigation", False),
+            "mitigation_only": exp_cfg.get("mitigation_only", False),
             "models": models,
         }
     return experiments
@@ -811,7 +829,9 @@ def main() -> None:
                     if model_cfg.get("cls_head_path"):
                         cls_head = load_cls_head(vlm, model_cfg["cls_head_path"])
 
-                det_metrics_dict = {}
+                # Pre-load detection metrics from rep 0 if already computed (resumable runs).
+                rep0_det_csv = out_root / f"{eval_type}_{slug}" / "rep_00" / "detection_predictions.csv"
+                det_metrics_dict = compute_detection_metrics(rep0_det_csv) if rep0_det_csv.exists() else {}
 
                 for rep in range(n_reps):
                     if _summary_row_exists(summary_path, eval_type, slug, rep):
@@ -889,9 +909,10 @@ def main() -> None:
                     rep_dir = out_root / f"{eval_type}_{slug}" / f"rep_{rep:02d}"
                     mit_csv = rep_dir / "mitigation_results.csv"
                     mit_dir = rep_dir / "mitigated"
+                    det_csv = rep_dir / "detection_predictions.csv"
 
                     print(f"  [rep_{rep:02d}] Diffusion inference", file=sys.stderr)
-                    run_mitigation_diffusion(diffusion_model, samples, img_root, mit_csv, mit_dir, generator=generator)
+                    run_mitigation_diffusion(diffusion_model, samples, img_root, mit_csv, mit_dir, generator=generator, det_path=det_csv)
 
                 del diffusion_model
                 torch.cuda.empty_cache()

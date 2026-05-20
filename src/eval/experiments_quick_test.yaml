@@ -8,4 +8,4 @@ experiments:
     description: "Baseline detection only (quick test)"
     run_mitigation: false
     models:
-      - google/gemma-4-31B-it
+      - Qwen/Qwen2.5-VL-7B-Instruct

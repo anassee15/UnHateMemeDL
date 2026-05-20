@@ -64,7 +64,7 @@ FIELDNAMES = [
     "id", "img", "label_true",
     "prob_before", "prob_after",
     "detoxify_before", "detoxify_after",
-    "hate_location", "severity",
+    "hate_source", "hate_location",
     "original_text", "replacement_text", "diffusion_prompt",
     "bertscore_f1", "clip_score", "ssim", "mps",
     "mitigated_path", "error",
@@ -130,7 +130,11 @@ def run_mitigation(args):
 
     print(f"[info] {len(hateful) - len(todo)} already done, {len(todo)} remaining.", file=sys.stderr)
 
-    vlm, processor = instantiate_vlm(args.vlm_name, args.cache_dir)
+    vlm, processor = instantiate_vlm(
+        args.vlm_name, args.cache_dir,
+        adapter_path=args.adapter_path,
+        mitigation_adapter_path=args.mitigation_adapter_path,
+    )
     diffusion_model = instantiate_diffusion(args.diffusion_model_name, cache_dir=args.cache_dir)
     generator = torch.Generator(device="cuda" if torch.cuda.is_available() else "cpu").manual_seed(42)
 
@@ -204,7 +208,11 @@ def run_judge(args):
 
     print(f"[info] {len(todo)} images to judge.", file=sys.stderr)
 
-    vlm, processor = instantiate_vlm(args.vlm_name, args.cache_dir)
+    vlm, processor = instantiate_vlm(
+        args.vlm_name, args.cache_dir,
+        adapter_path=args.adapter_path,
+        mitigation_adapter_path=args.mitigation_adapter_path,
+    )
 
     f, writer = open_csv_writer(out_path, append=True)
     with f:
@@ -226,9 +234,9 @@ def run_judge(args):
             if json_path.exists():
                 try:
                     mit_json = json.loads(json_path.read_text())
-                    row["hate_location"]   = mit_json.get("hate_location", "")
-                    row["severity"]        = mit_json.get("severity", "")
-                    row["original_text"]   = (mit_json.get("original_text") or "").replace("\n", "\\n")
+                    row["hate_source"]      = mit_json.get("hate_source", "")
+                    row["hate_location"]    = mit_json.get("hate_location", "")
+                    row["original_text"]    = (mit_json.get("original_text") or "").replace("\n", "\\n")
                     row["replacement_text"] = (mit_json.get("replacement_text") or "").replace("\n", "\\n")
                     row["diffusion_prompt"] = mit_json.get("diffusion_prompt", "")
                 except Exception:
@@ -579,9 +587,11 @@ def main():
     parser.add_argument("--det_csv",     required=True,  help="Detection predictions CSV (from run_detection_eval.py)")
     parser.add_argument("--out_dir",     default="report/mitigated", help="Dir to save mitigated images + JSONs")
     parser.add_argument("--output_csv",  default="report/mitigation_results.csv")
-    parser.add_argument("--vlm_name",       default="Qwen/Qwen3.6-27B")
-    parser.add_argument("--diffusion_model_name", default="black-forest-labs/FLUX.2-klein-9B")
-    parser.add_argument("--cache_dir",   default=None)
+    parser.add_argument("--vlm_name",                default="Qwen/Qwen3.6-27B")
+    parser.add_argument("--diffusion_model_name",    default="black-forest-labs/FLUX.2-klein-9B")
+    parser.add_argument("--cache_dir",               default=None)
+    parser.add_argument("--adapter_path",            default=None, help="Detection LoRA adapter path")
+    parser.add_argument("--mitigation_adapter_path", default=None, help="Mitigation LoRA adapter path")
 
     # Phase flags
     parser.add_argument("--run_mitigation",  action="store_true", help="Phase 1: run pipeline on hateful images")

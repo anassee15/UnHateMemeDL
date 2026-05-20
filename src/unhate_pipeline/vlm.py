@@ -191,6 +191,9 @@ def detect_hateful_meme(model, processor, image_path, thinking=False, max_new_to
     # Use the fine-tuning prompt when a LoRA adapter is active (schema matches training targets).
     # Fall back to the base prompt for non-fine-tuned models.
     is_finetuned = hasattr(model, "peft_config") and len(getattr(model, "peft_config", {})) > 0
+    # Ensure "detect" adapter is active — get_diffusion_prompt may have switched to "mitigate".
+    if is_finetuned and "detect" in getattr(model, "peft_config", {}):
+        model.set_adapter("detect")
     prompt = HATEFUL_DETECTION_PROMPT_FT_RICH if is_finetuned else HATEFUL_DETECTION_PROMPT
     return run_vlm(model, processor, image_path, prompt, thinking, max_new_tokens, temperature)
 
