@@ -64,8 +64,8 @@ FIELDNAMES = [
     "id", "img", "label_true",
     "prob_before", "prob_after",
     "detoxify_before", "detoxify_after",
-    "hate_location", "severity",
-    "original_text", "replacement_text", "flux_prompt",
+    "hate_source", "hate_location",
+    "original_text", "replacement_text", "diffusion_prompt",
     "bertscore_f1", "clip_score", "ssim", "mps",
     "mitigated_path", "error",
 ]
@@ -226,11 +226,11 @@ def run_judge(args):
             if json_path.exists():
                 try:
                     mit_json = json.loads(json_path.read_text())
-                    row["hate_location"]   = mit_json.get("hate_location", "")
-                    row["severity"]        = mit_json.get("severity", "")
-                    row["original_text"]   = (mit_json.get("original_text") or "").replace("\n", "\\n")
+                    row["hate_source"]      = mit_json.get("hate_source", "")
+                    row["hate_location"]    = mit_json.get("hate_location", "")
+                    row["original_text"]    = (mit_json.get("original_text") or "").replace("\n", "\\n")
                     row["replacement_text"] = (mit_json.get("replacement_text") or "").replace("\n", "\\n")
-                    row["flux_prompt"]     = mit_json.get("flux_prompt", "")
+                    row["diffusion_prompt"] = mit_json.get("diffusion_prompt", "")
                 except Exception:
                     pass
 

@@ -39,10 +39,19 @@ from pathlib import Path
 # Make pipeline modules importable
 sys.path.insert(0, str(Path(__file__).parent.parent / "unhate_pipeline"))
 
-from vlm import instantiate_vlm, detect_hateful_meme, detect_hate_type
+from vlm import instantiate_vlm, detect_hateful_meme, detect_hate_type, run_vlm
 from utils import parse_hateful_response, parse_hate_type_response
-from prompt import BASELINE_V2_EXAMPLE_IDS
+from prompt import BASELINE_V2_EXAMPLE_IDS, ZEROSHOT_DETECTION_PROMPT
 from affect_prompting import CATEGORIZED_V2_EXAMPLE_IDS
+
+_PIPELINE_MAP = {
+    "fewshot_synthetic": "baseline",       # HATEFUL_DETECTION_PROMPT — 17 synthetic calibration examples
+    "fewshot_real":      "baseline_v2",    # BASELINE_V2_PROMPT — 4 real labeled examples (exclude IDs from metrics)
+    "sentiment_single":  "single_affect",
+    "sentiment_chained": "affect",
+    "category_sentiment":"categorized",
+    "category_fewshot":  "categorized_v2",
+}
 
 FIELDNAMES = [
     "id", "img", "label_true", "text",
@@ -114,7 +123,12 @@ def run_inference(args):
 
             # --- detection --------------------------------------------------
             try:
-                raw = detect_hateful_meme(vlm, processor, img_path, pipeline=args.pipeline)
+                if args.pipeline == "zeroshot":
+                    raw = run_vlm(vlm, processor, img_path,
+                                  ZEROSHOT_DETECTION_PROMPT, temperature=0.95)
+                else:
+                    raw = detect_hateful_meme(vlm, processor, img_path,
+                                              pipeline=_PIPELINE_MAP[args.pipeline])
                 is_hateful, prob, description = parse_hateful_response(raw)
                 row["prob_pred"]     = prob
                 row["label_pred"]    = 1 if prob >= 0.5 else 0
@@ -221,20 +235,24 @@ def main():
     parser.add_argument("--vlm_name",  default="Qwen/Qwen3.6-27B")
     parser.add_argument("--cache_dir", default=None)
     parser.add_argument("--modality_analysis", action="store_true", help="Run detect_hate_type on hateful images for per-modality F1")
-    parser.add_argument("--pipeline", default="baseline",
-                        choices=["baseline", "affect", "categorized", "single_affect",
-                                 "baseline_v2", "categorized_v2"],
-                        help="Prompting pipeline: baseline | affect | categorized | single_affect | baseline_v2 | categorized_v2")
+    parser.add_argument("--pipeline", default="zeroshot",
+                        choices=["zeroshot",
+                                 "fewshot_synthetic", "fewshot_real",
+                                 "sentiment_single", "sentiment_chained",
+                                 "category_sentiment", "category_fewshot"],
+                        help="Prompting pipeline (default: zeroshot — hate definition + criteria only). "
+                             "Options: zeroshot | fewshot_synthetic | fewshot_real | "
+                             "sentiment_single | sentiment_chained | category_sentiment | category_fewshot")
     args = parser.parse_args()
 
     if not args.img_dir:
         parser.error("--img_dir is required")
     print(f"[info] Pipeline: {args.pipeline}", file=sys.stderr)
 
-    if args.pipeline == "baseline_v2":
+    if args.pipeline == "fewshot_real":
         print(f"[info] Few-shot example IDs (exclude from metrics): {BASELINE_V2_EXAMPLE_IDS}",
               file=sys.stderr)
-    elif args.pipeline == "categorized_v2":
+    elif args.pipeline == "category_fewshot":
         all_ids = [id_ for ids in CATEGORIZED_V2_EXAMPLE_IDS.values() for id_ in ids]
         print(f"[info] Few-shot example IDs (exclude from metrics): {sorted(set(all_ids))}",
               file=sys.stderr)

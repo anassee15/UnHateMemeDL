@@ -39,6 +39,20 @@ _CLASSIFICATION_CRITERIA = (
 
 
 # ---------------------------------------------------------------------------
+# PIPELINE: zeroshot
+# Hate definition + classification criteria only. No few-shot examples.
+# Matches the baseline behavior in main — safe default for teammates.
+# ---------------------------------------------------------------------------
+
+ZEROSHOT_DETECTION_PROMPT = (
+    HATEFUL_DEFINITION + "\n\n"
+    + _CLASSIFICATION_CRITERIA + "\n\n"
+    "You consider visual and textual meanings to classify the meme as hateful or non-hateful. "
+    + _JSON_SCHEMA
+)
+
+
+# ---------------------------------------------------------------------------
 # PIPELINE: baseline
 # Baseline prompt + 17 calibration few-shot examples.
 # Goal: raise model confidence so p=0.5 correctly separates hateful/non-hateful.
@@ -341,7 +355,7 @@ GET_DIFFUSION_USER_PROMPT = (
     "</think>\n\n"
     "## Output Format\n\n"
     "Respond ONLY with the following JSON — no extra commentary.\n\n"
-    "CRITICAL: The 'flux_prompt' field must be a plain natural language string, "
+    "CRITICAL: The 'diffusion_prompt' field must be a plain natural language string, "
     "ready to be passed DIRECTLY to a diffusion model as pipe(prompt=...). "
     "It must NOT contain JSON, brackets, field names, or structured syntax. "
     "It must read as a natural image editing instruction, like a human art director "
@@ -349,14 +363,13 @@ GET_DIFFUSION_USER_PROMPT = (
     "{\n"
     '  "hate_source": "<one sentence: what element is hateful and why>",\n'
     '  "hate_location": "TEXT_ONLY | VISUAL_ONLY | COMBINED | INTERSECTIONAL",\n'
-    '  "severity": "SURGICAL_TEXT | SURGICAL_VISUAL | SURGICAL_BOTH | STRUCTURAL",\n'
     '  "original_text": "<verbatim text visible in the image, or null>",\n'
     '  "replacement_text": "<neutral replacement text preserving humor structure (represents the difference between top and bottom text with a newline, maximum one new line), or null>",\n'
     '  "strategy": "<one sentence: what changes and what is preserved>",\n'
-    '  "flux_prompt": "<plain natural language diffusion prompt, never speak about text change in this part, the diffusion model should only handle visual changes>",\n'
+    '  "diffusion_prompt": "<plain natural language diffusion prompt, never speak about text change in this part, the diffusion model should only handle visual changes>",\n'
     '  "expected_change": "<one sentence: what the output will look like vs. input>"\n'
     "}\n\n"
-    "## Examples of valid flux_prompt values:\n\n"
+    "## Examples of valid diffusion_prompt values:\n\n"
     "SURGICAL_TEXT example:\n"
     "'Remove the top text and bottom text overlays completely. Repaint the text areas\n"
     "to match the background texture. Preserve the original meme template image,\n"

@@ -117,10 +117,10 @@ def parse_prompt_generation(raw: str, fallback_prompt: str = "Preserve the image
         except Exception as e:
             return _fallback(fallback_prompt, f"Parse error: {e}")
 
-    # 5. Validate flux_prompt is a clean plain string
-    flux = parsed.get("flux_prompt", "")
+    # 5. Validate diffusion_prompt is a clean plain string
+    flux = parsed.get("diffusion_prompt", "")
     if not isinstance(flux, str) or len(flux.strip()) < 10 or flux.strip().startswith("{"):
-        return _fallback(fallback_prompt, f"Invalid flux_prompt: '{flux[:80]}'")
+        return _fallback(fallback_prompt, f"Invalid diffusion_prompt: '{flux[:80]}'")
 
     return parsed
 
@@ -129,8 +129,8 @@ def _fallback(prompt: str, reason: str) -> dict:
     print(f"[WARN] VLM parse failed: {reason}")
     return {
         "hate_source": "parse_error", "hate_location": "VISUAL_ONLY",
-        "severity": "STRUCTURAL", "original_text": None,
+        "original_text": None,
         "replacement_text": None, "strategy": "Fallback: no mitigation applied",
-        "flux_prompt": prompt, "expected_change": "Image unchanged due to parse error",
+        "diffusion_prompt": prompt, "expected_change": "Image unchanged due to parse error",
         "_parse_error": reason,
     }

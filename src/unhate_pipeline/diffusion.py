@@ -17,7 +17,7 @@ def instantiate_diffusion(model_name: str, cache_dir: str | None =None):
         torch_dtype=torch_dtype,
         cache_dir=cache_dir,
     )
-    pipe.enable_sequential_cpu_offload()
+    pipe.to("cuda" if torch.cuda.is_available() else "cpu")
     return pipe
 
 
@@ -126,7 +126,7 @@ def mitigate_image(pipe, image: Image.Image, mitigation: dict, generator=None) -
     # A: Handle visual mitigation with diffusion model (if needed)
     if hate_loc in ("VISUAL_ONLY", "COMBINED", "INTERSECTIONAL", "STRUCTURAL"):
         print(f"[info] Mitigating visual elements...")
-        image = run_diffusion(pipe, image, mitigation["flux_prompt"], generator=generator)
+        image = run_diffusion(pipe, image, mitigation["diffusion_prompt"], generator=generator)
 
     # B: Handle text mitigation (Remove/replace hateful text) if needed
     if hate_loc in ("TEXT_ONLY", "COMBINED", "INTERSECTIONAL") and mitigation.get("replacement_text"):

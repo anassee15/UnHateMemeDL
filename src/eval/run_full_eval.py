@@ -79,8 +79,8 @@ MIT_FIELDNAMES = [
     "id", "img", "label_true",
     "prob_before", "prob_after",
     "detoxify_before", "detoxify_after",
-    "hate_location", "severity",
-    "original_text", "replacement_text", "flux_prompt",
+    "hate_source", "hate_location",
+    "original_text", "replacement_text", "diffusion_prompt",
     "bertscore_f1", "clip_score", "ssim", "mps",
     "mitigated_path", "error",
     "t_prompt_s", "t_diffusion_s",
@@ -347,11 +347,11 @@ def run_mitigation(
             row["t_prompt_s"] = f"{time.perf_counter() - t_p:.3f}"
             jpath.write_text(json.dumps(mitigation, ensure_ascii=False, indent=2))
 
+            row["hate_source"]      = mitigation.get("hate_source", "")
             row["hate_location"]    = mitigation.get("hate_location", "")
-            row["severity"]         = mitigation.get("severity", "")
             row["original_text"]    = (mitigation.get("original_text") or "").replace("\n", "\\n")
             row["replacement_text"] = (mitigation.get("replacement_text") or "").replace("\n", "\\n")
-            row["flux_prompt"]      = mitigation.get("flux_prompt", "")
+            row["diffusion_prompt"] = mitigation.get("diffusion_prompt", "")
 
             # 3b — Diffusion: apply mitigation to the image
             t_d = time.perf_counter()
