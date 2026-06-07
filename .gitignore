@@ -2,9 +2,8 @@
 .DS_Store
 
 data/*
-!data/**/
-!data/*.md
-!data/**/.gitkeep
+
+report/*
 
 ### VisualStudioCode ###
 .vscode/*

@@ -300,9 +300,9 @@ def run_mitigation_prompts(
             if det_row and det_row.get("prob_pred"):
                 prob_before = float(det_row["prob_pred"])
 
-            if prob_before < 0.2:
-                jpath.write_text(json.dumps({"skipped": "prob < 0.2", "prob": prob_before}))
-                print(f"  [{i+1}/{len(todo)}] {img_path.name}: prob={prob_before:.3f} < 0.2 → skip", file=sys.stderr)
+            if prob_before < 0.5:
+                jpath.write_text(json.dumps({"skipped": "prob < 0.5", "prob": prob_before}))
+                print(f"  [{i+1}/{len(todo)}] {img_path.name}: prob={prob_before:.3f} < 0.5 → skip", file=sys.stderr)
                 continue
 
             raw_prompt = get_diffusion_prompt(vlm, processor, img_path)
@@ -323,7 +323,11 @@ def run_mitigation_diffusion(
     mit_csv_path: Path, out_dir: Path,
     generator: torch.Generator,
     det_path: Path | None = None,
+    prompt_dir: Path | None = None,
 ) -> None:
+    prompt_dir = prompt_dir or out_dir
+    out_dir.mkdir(parents=True, exist_ok=True)
+    mit_csv_path.parent.mkdir(parents=True, exist_ok=True)
     det: dict = {}
     if det_path is not None and det_path.exists():
         with open(det_path, newline="") as f:
@@ -343,7 +347,7 @@ def run_mitigation_diffusion(
         sid = sample["id"]
         img_path = img_root / sample["img"]
         mit_path = out_dir / f"{sid}_mitigated.png"
-        jpath = out_dir / f"{sid}_intermediate.json"
+        jpath = prompt_dir / f"{sid}_intermediate.json"
 
         print(f"  [{i+1}/{len(todo)}] {img_path.name}", file=sys.stderr)
 
@@ -370,7 +374,7 @@ def run_mitigation_diffusion(
                 row["t_diffusion_s"] = "0"
                 image = Image.open(img_path).convert("RGB")
                 image.save(mit_path)
-                print(f"    Skipped (prob < 0.2)", file=sys.stderr)
+                print(f"    Skipped (prob < 0.5)", file=sys.stderr)
                 append_csv_row(mit_csv_path, MIT_FIELDNAMES, row)
                 continue
 
@@ -404,7 +408,7 @@ def run_mitigation_diffusion(
     print(f"[step3b] Diffusion complete → {out_dir}", file=sys.stderr)
 
 
-def run_judge(vlm, processor, mit_csv_path: Path, out_dir: Path) -> None:
+def run_judge(vlm, processor, mit_csv_path: Path, out_dir: Path, img_root: Path | None = None) -> None:
     if not mit_csv_path.exists():
         print("[step4] No mitigation CSV found — skipping judge.", file=sys.stderr)
         return
@@ -413,27 +417,63 @@ def run_judge(vlm, processor, mit_csv_path: Path, out_dir: Path) -> None:
         rows = list(csv.DictReader(f))
 
     to_judge = [r for r in rows if not r.get("prob_after") and not r.get("error")]
-    if not to_judge:
+    to_backfill = (
+        [r for r in rows if not r.get("prob_before") and r.get("prob_after") and not r.get("error") and r.get("img")]
+        if img_root else []
+    )
+
+    if not to_judge and not to_backfill:
         print("[step4] All rows already judged — skipping.", file=sys.stderr)
         return
 
-    print(f"[step4] Judging {len(to_judge)} mitigated images.", file=sys.stderr)
-
     id_to_row = {r["id"]: r for r in rows}
-    for i, row in enumerate(to_judge):
-        mit_path = Path(row.get("mitigated_path", out_dir / f"{row['id']}_mitigated.png"))
-        print(f"  [{i+1}/{len(to_judge)}] {mit_path.name}", file=sys.stderr, end="  ")
-        if not mit_path.exists():
-            print("not found — skip", file=sys.stderr)
-            continue
-        try:
-            raw = detect_hateful_meme(vlm, processor, mit_path)
-            _, prob_after, _ = parse_hateful_response(raw)
-            id_to_row[row["id"]]["prob_after"] = f"{prob_after:.4f}"
-            print(f"before={row['prob_before']}  after={prob_after:.3f}", file=sys.stderr)
-        except Exception as e:
-            print(f"ERROR: {e}", file=sys.stderr)
-            id_to_row[row["id"]]["error"] = str(e)
+
+    # Backfill prob_before for already-judged rows (e.g. mitigation_only runs on resume).
+    if to_backfill:
+        print(f"[step4] Backfilling prob_before for {len(to_backfill)} rows.", file=sys.stderr)
+        for i, row in enumerate(to_backfill):
+            orig_path = img_root / row["img"]
+            print(f"  [bf {i+1}/{len(to_backfill)}] {orig_path.name}", file=sys.stderr, end="  ")
+            if not orig_path.exists():
+                print("not found — skip", file=sys.stderr)
+                continue
+            try:
+                _, prob_before, _ = parse_hateful_response(
+                    detect_hateful_meme(vlm, processor, orig_path)
+                )
+                id_to_row[row["id"]]["prob_before"] = f"{prob_before:.4f}"
+                print(f"prob_before={prob_before:.3f}", file=sys.stderr)
+            except Exception as e:
+                print(f"ERROR: {e}", file=sys.stderr)
+
+    if not to_judge:
+        print("[step4] No new images to judge.", file=sys.stderr)
+    else:
+        print(f"[step4] Judging {len(to_judge)} mitigated images.", file=sys.stderr)
+        for i, row in enumerate(to_judge):
+            mit_path = Path(row.get("mitigated_path", out_dir / f"{row['id']}_mitigated.png"))
+            print(f"  [{i+1}/{len(to_judge)}] {mit_path.name}", file=sys.stderr, end="  ")
+            if not mit_path.exists():
+                print("not found — skip", file=sys.stderr)
+                continue
+            try:
+                # Fill prob_before from original image when missing (e.g. mitigation_only runs).
+                if not row.get("prob_before") and img_root and row.get("img"):
+                    orig_path = img_root / row["img"]
+                    if orig_path.exists():
+                        _, prob_before, _ = parse_hateful_response(
+                            detect_hateful_meme(vlm, processor, orig_path)
+                        )
+                        id_to_row[row["id"]]["prob_before"] = f"{prob_before:.4f}"
+                        row["prob_before"] = f"{prob_before:.4f}"
+
+                raw = detect_hateful_meme(vlm, processor, mit_path)
+                _, prob_after, _ = parse_hateful_response(raw)
+                id_to_row[row["id"]]["prob_after"] = f"{prob_after:.4f}"
+                print(f"before={row['prob_before']}  after={prob_after:.3f}", file=sys.stderr)
+            except Exception as e:
+                print(f"ERROR: {e}", file=sys.stderr)
+                id_to_row[row["id"]]["error"] = str(e)
 
     mit_csv_path.write_text("")
     with open(mit_csv_path, "w", newline="") as f:
@@ -833,6 +873,8 @@ def main() -> None:
                 rep0_det_csv = out_root / f"{eval_type}_{slug}" / "rep_00" / "detection_predictions.csv"
                 det_metrics_dict = compute_detection_metrics(rep0_det_csv) if rep0_det_csv.exists() else {}
 
+                shared_prompt_dir = out_root / f"{eval_type}_{slug}" / "prompts"
+
                 for rep in range(n_reps):
                     if _summary_row_exists(summary_path, eval_type, slug, rep):
                         print(f"  [rep_{rep:02d}] already done — skip", file=sys.stderr)
@@ -840,9 +882,8 @@ def main() -> None:
 
                     rep_dir = out_root / f"{eval_type}_{slug}" / f"rep_{rep:02d}"
                     det_csv = rep_dir / "detection_predictions.csv"
-                    mit_prompt_dir = rep_dir / "mitigated"
 
-                    print(f"  [rep_{rep:02d}] Detection + Prompt gen", file=sys.stderr)
+                    print(f"  [rep_{rep:02d}] Detection", file=sys.stderr)
 
                     if not args.metrics_only:
                         run_detection(vlm, processor, samples, img_root, det_csv, cls_head=cls_head)
@@ -850,8 +891,12 @@ def main() -> None:
                     if rep == 0 and det_csv.exists():
                         det_metrics_dict = compute_detection_metrics(det_csv)
 
-                    if exp_cfg.get("run_mitigation") and not args.skip_mitigation and not args.metrics_only:
-                        run_mitigation_prompts(vlm, processor, samples, img_root, det_csv, mit_prompt_dir)
+                # Generate prompts once (deterministic) using rep 0 detection results.
+                if exp_cfg.get("run_mitigation") and not args.skip_mitigation and not args.metrics_only and vlm is not None:
+                    rep0_det = out_root / f"{eval_type}_{slug}" / "rep_00" / "detection_predictions.csv"
+                    run_mitigation_prompts(vlm, processor, samples, img_root,
+                                          rep0_det if rep0_det.exists() else None,
+                                          shared_prompt_dir)
 
                 if vlm is not None:
                     del vlm, processor
@@ -864,8 +909,19 @@ def main() -> None:
                 mode_str = "YAML config" if exp_cfg.get("mitigation_only") else "CLI flag"
                 print(f"\n[Phase A (mitigation_only via {mode_str})] VLM: prompt generation ({n_reps} reps)", file=sys.stderr)
 
-                vlm = processor = None
-                if not args.metrics_only:
+                det_metrics_dict = {}  # Empty: no detection metrics
+                shared_prompt_dir = out_root / f"{eval_type}_{slug}" / "prompts"
+
+                # Check if all prompts already exist — skip VLM load if so.
+                hateful_ids = [s["id"] for s in samples if int(s.get("label", 0)) == 1]
+                all_prompts_ready = all(
+                    (shared_prompt_dir / f"{sid}_intermediate.json").exists()
+                    for sid in hateful_ids
+                )
+
+                if all_prompts_ready:
+                    print(f"[Phase A] All prompts already generated — skipping VLM load.", file=sys.stderr)
+                elif not args.metrics_only:
                     print("[load] Loading VLM …", file=sys.stderr)
                     vlm, processor = instantiate_vlm(
                         vlm_name, CACHE_DIR,
@@ -873,24 +929,8 @@ def main() -> None:
                         mitigation_adapter_path=model_cfg.get("mitigation_adapter_path"),
                     )
                     print(f"[load] VLM on {vlm.device}", file=sys.stderr)
-
-                det_metrics_dict = {}  # Empty: no detection metrics
-
-                for rep in range(n_reps):
-                    if _summary_row_exists(summary_path, eval_type, slug, rep):
-                        print(f"  [rep_{rep:02d}] already done — skip", file=sys.stderr)
-                        continue
-
-                    rep_dir = out_root / f"{eval_type}_{slug}" / f"rep_{rep:02d}"
-                    mit_prompt_dir = rep_dir / "mitigated"
-
-                    print(f"  [rep_{rep:02d}] Prompt generation (skip detection)", file=sys.stderr)
-
-                    # Only generate prompts, skip detection
-                    if not args.metrics_only and vlm is not None:
-                        run_mitigation_prompts(vlm, processor, samples, img_root, None, mit_prompt_dir)
-
-                if vlm is not None:
+                    print(f"[Phase A] Generating mitigation prompts once → {shared_prompt_dir}", file=sys.stderr)
+                    run_mitigation_prompts(vlm, processor, samples, img_root, None, shared_prompt_dir)
                     del vlm, processor
                     torch.cuda.empty_cache()
 
@@ -899,20 +939,25 @@ def main() -> None:
                 print(f"\n[Phase B] Diffusion: image mitigation ({n_reps} reps)", file=sys.stderr)
 
                 diffusion_model = instantiate_diffusion(DIFFUSION_MODEL, cache_dir=CACHE_DIR)
-                generator = torch.Generator(device="cuda" if torch.cuda.is_available() else "cpu").manual_seed(42)
+                _device = "cuda" if torch.cuda.is_available() else "cpu"
 
                 for rep in range(n_reps):
                     if _summary_row_exists(summary_path, eval_type, slug, rep):
                         print(f"  [rep_{rep:02d}] already done — skip", file=sys.stderr)
                         continue
 
+                    generator = torch.Generator(device=_device).manual_seed(42 + rep)
+
                     rep_dir = out_root / f"{eval_type}_{slug}" / f"rep_{rep:02d}"
                     mit_csv = rep_dir / "mitigation_results.csv"
                     mit_dir = rep_dir / "mitigated"
                     det_csv = rep_dir / "detection_predictions.csv"
 
-                    print(f"  [rep_{rep:02d}] Diffusion inference", file=sys.stderr)
-                    run_mitigation_diffusion(diffusion_model, samples, img_root, mit_csv, mit_dir, generator=generator, det_path=det_csv)
+                    print(f"  [rep_{rep:02d}] Diffusion inference (seed={42 + rep})", file=sys.stderr)
+                    run_mitigation_diffusion(diffusion_model, samples, img_root, mit_csv, mit_dir,
+                                            generator=generator,
+                                            det_path=det_csv if det_csv.exists() else None,
+                                            prompt_dir=shared_prompt_dir)
 
                 del diffusion_model
                 torch.cuda.empty_cache()
@@ -939,7 +984,7 @@ def main() -> None:
                     mit_dir = rep_dir / "mitigated"
 
                     if vlm is not None:
-                        run_judge(vlm, processor, mit_csv, mit_dir)
+                        run_judge(vlm, processor, mit_csv, mit_dir, img_root=img_root)
 
                     mit_metrics = compute_mitigation_metrics(mit_csv, img_root) if mit_csv.exists() else {}
 

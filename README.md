@@ -2,6 +2,35 @@
 
 Mitigate hateful content on image meme using open source Vision-Language Models (VLMs) and Diffusion Models.
 
+## Detection prompting pipelines
+
+The hateful meme detection step (`src/eval/run_detection_eval.py`) supports several prompting strategies via `--pipeline`:
+
+| Pipeline | Description | VLM calls |
+|---|---|---|
+| `default` **(default)** | Adapter-aware generative detection (the baseline behavior; uses the fine-tuning prompt when a detection LoRA adapter is active, otherwise `HATEFUL_DETECTION_PROMPT`). | 1 |
+| `zeroshot` | Hate definition + classification criteria only. No examples, no affect routing. | 1 |
+| `fewshot_synthetic` | Adds 17 synthetic calibration examples spanning the full range of hate types (explicit, implicit, culturally coded, historical, intersectional). Raises model confidence for borderline cases. | 1 |
+| `fewshot_real` | Adds 4 real labeled examples from the eval set (IDs 80243, 9467, 62375, 91756 — **must be excluded from metrics**). | 1 |
+| `sentiment_single` | Single-call affect-aware detection. The model reasons over sentiment, humor, sarcasm, and offensiveness internally before classifying. | 1 |
+| `sentiment_chained` | Two-step chain: (1) classify affect/sentiment dimensions, (2) hate detection conditioned on the detected affect profile. | 2 |
+| `category_sentiment` | Two-to-three-step chain: (1) classify meme category (historical / general\_culture / identity\_social), (2) classify affect if non-historical, (3) hate detection conditioned on category + affect. | 2–3 |
+| `category_fewshot` | Two-step chain: (1) classify meme category, (2) hate detection with category-specific few-shot examples. | 2 |
+
+These prompts live in `src/unhate_pipeline/prompt.py` and `src/unhate_pipeline/affect_prompting.py`. Quantitative comparison across pipelines: see [`report/pipeline_comparison.md`](report/pipeline_comparison.md) and [`report/detection_results.md`](report/detection_results.md).
+
+Example usage:
+
+```bash
+python src/eval/run_detection_eval.py \
+    --jsonl  data/eval_data/eval_490_balanced.jsonl \
+    --img_dir data/eval_data \
+    --output  report/detection_predictions.csv \
+    --pipeline fewshot_synthetic
+```
+
+The `--pipeline` choice applies to the generative path only; it is ignored when `--cls_head_path` (classification-head detection) is set.
+
 ## Build the Docker image
 
 Install Docker on your local machine if you haven't already. Then, go in the docker/ directory. If you want to add dependecies, you can modify the `requirements.txt` file and rebuild the image.

@@ -1,4 +1,6 @@
 import sys
+import re
+import json
 from pathlib import Path
 from PIL import Image
 
@@ -11,6 +13,17 @@ from prompt import (
     HATEFUL_DETECTION_PROMPT_FT_RICH,
     TYPE_OF_HATE_PROMPT, SOURCE_OF_HATE_PROMPT,
     build_diffusion_prompt,
+    # Detection prompt-ablation pipelines (run_detection_eval.py --pipeline):
+    FEWSHOT_SYNTHETIC_PROMPT, BASELINE_V2_PROMPT, SINGLE_AFFECT_PROMPT,
+)
+# NOTE: import `prompt` before `affect_prompting` — see circular-import note in prompt.py.
+from affect_prompting import (
+    AFFECT_CLASSIFICATION_PROMPT,
+    MEME_CATEGORY_PROMPT,
+    build_affect_aware_hateful_detection_prompt,
+    build_category_aware_hateful_detection_prompt,
+    build_historical_fewshot_detection_prompt,
+    build_categorized_v2_detection_prompt,
 )
 
 
@@ -71,7 +84,7 @@ def instantiate_vlm(
     return model, processor
 
 
-# ── Classification head helpers ───────────────────────────────────────────────
+# classification head helpers
 
 def load_cls_head(model: nn.Module, head_path: str) -> nn.Linear:
     """
@@ -187,11 +200,124 @@ def run_vlm(model, processor, image_path, prompt, thinking=False, max_new_tokens
     return output
 
 
-def detect_hateful_meme(model, processor, image_path, thinking=False, max_new_tokens=512, temperature=0.95):
-    # Use the fine-tuning prompt when a LoRA adapter is active (schema matches training targets).
-    # Fall back to the base prompt for non-fine-tuned models.
+def _parse_json_safe(raw: str) -> dict:
+    """Strip markdown fences and parse JSON; return empty dict on failure."""
+    raw = re.sub(r"^```(?:json)?\s*", "", raw.strip(), flags=re.IGNORECASE)
+    raw = re.sub(r"\s*```$", "", raw)
+    try:
+        result = json.loads(raw)
+        return result if isinstance(result, dict) else {}
+    except Exception:
+        return {}
+
+
+def _parse_affect(raw: str) -> dict:
+    """Parse affect classification JSON; return safe defaults on failure."""
+    parsed = _parse_json_safe(raw)
+    defaults = {
+        "overall_sentiment": "neutral",
+        "humor": "not_funny",
+        "sarcasm": "not_sarcastic",
+        "offense": "not_offensive",
+        "motivation": "not_motivational",
+        "rationale": "",
+    }
+    defaults.update({k: v for k, v in parsed.items() if k in defaults})
+    return defaults
+
+
+def _parse_category(raw: str) -> str:
+    """Parse category classification JSON; return 'general_culture' on failure."""
+    parsed = _parse_json_safe(raw)
+    category = parsed.get("category", "general_culture")
+    if category not in ("historical", "general_culture", "identity_social"):
+        return "general_culture"
+    return category
+
+
+def detect_hateful_meme(model, processor, image_path, pipeline=None,
+                        thinking=False, max_new_tokens=512, temperature=0.95):
+    """
+    Classify a meme as hateful or not.
+
+    pipeline=None (default) — main's original behavior: adapter-aware prompt
+        selection (HATEFUL_DETECTION_PROMPT, or the FT-rich prompt when a
+        detection LoRA adapter is active). Used by main.py / run_full_eval.py.
+
+    Prompt-ablation pipelines (driven by run_detection_eval.py --pipeline):
+      "baseline"       — 1 call, 17 synthetic calibration few-shot examples
+      "baseline_v2"    — 1 call, compact 4-example real few-shot prompt
+      "single_affect"  — 1 call, single prompt with internal affect reasoning
+      "affect"         — 2 calls: affect classification → affect-specific detection
+      "categorized"    — 2-3 calls: category → (affect) → hate detection
+      "categorized_v2" — 2 calls: category → category-specific few-shot detection
+    """
+    if pipeline == "baseline":
+        return run_vlm(model, processor, image_path, FEWSHOT_SYNTHETIC_PROMPT,
+                       thinking, max_new_tokens, temperature)
+
+    elif pipeline == "baseline_v2":
+        return run_vlm(model, processor, image_path, BASELINE_V2_PROMPT,
+                       thinking, max_new_tokens, temperature)
+
+    elif pipeline == "single_affect":
+        return run_vlm(model, processor, image_path, SINGLE_AFFECT_PROMPT,
+                       thinking, max_new_tokens, temperature)
+
+    elif pipeline == "categorized_v2":
+        print("[pipeline:categorized_v2] Step 1 — category classification", file=sys.stderr)
+        cat_raw = run_vlm(model, processor, image_path, MEME_CATEGORY_PROMPT,
+                          thinking, max_new_tokens, temperature)
+        category = _parse_category(cat_raw)
+        print(f"[pipeline:categorized_v2] Category: {category}", file=sys.stderr)
+
+        print("[pipeline:categorized_v2] Step 2 — hate classification", file=sys.stderr)
+        hate_prompt = build_categorized_v2_detection_prompt(category)
+        return run_vlm(model, processor, image_path, hate_prompt,
+                       thinking, max_new_tokens, temperature)
+
+    elif pipeline == "affect":
+        print("[pipeline:affect] Step 1 — affect classification", file=sys.stderr)
+        affect_raw = run_vlm(model, processor, image_path, AFFECT_CLASSIFICATION_PROMPT,
+                             thinking, max_new_tokens, temperature)
+        affect = _parse_affect(affect_raw)
+        print(f"[pipeline:affect] Detected: sentiment={affect['overall_sentiment']} "
+              f"humor={affect['humor']} sarcasm={affect['sarcasm']} "
+              f"offense={affect['offense']}", file=sys.stderr)
+
+        print("[pipeline:affect] Step 2 — hate classification", file=sys.stderr)
+        hate_prompt = build_affect_aware_hateful_detection_prompt(affect)
+        return run_vlm(model, processor, image_path, hate_prompt,
+                       thinking, max_new_tokens, temperature)
+
+    elif pipeline == "categorized":
+        print("[pipeline:categorized] Step 1 — category classification", file=sys.stderr)
+        cat_raw = run_vlm(model, processor, image_path, MEME_CATEGORY_PROMPT,
+                          thinking, max_new_tokens, temperature)
+        category = _parse_category(cat_raw)
+        print(f"[pipeline:categorized] Category: {category}", file=sys.stderr)
+
+        if category == "historical":
+            # historical memes use few-shot examples directly and skip the affect step
+            print("[pipeline:categorized] Step 2 — historical few-shot hate classification", file=sys.stderr)
+            hate_prompt = build_historical_fewshot_detection_prompt()
+        else:
+            print(f"[pipeline:categorized] Step 2 — affect classification for '{category}'", file=sys.stderr)
+            affect_raw = run_vlm(model, processor, image_path, AFFECT_CLASSIFICATION_PROMPT,
+                                 thinking, max_new_tokens, temperature)
+            affect = _parse_affect(affect_raw)
+            print(f"[pipeline:categorized] Detected: sentiment={affect['overall_sentiment']} "
+                  f"humor={affect['humor']} sarcasm={affect['sarcasm']} "
+                  f"offense={affect['offense']}", file=sys.stderr)
+            hate_prompt = build_category_aware_hateful_detection_prompt(category, affect)
+
+        print("[pipeline:categorized] Final step — hate classification", file=sys.stderr)
+        return run_vlm(model, processor, image_path, hate_prompt,
+                       thinking, max_new_tokens, temperature)
+
+    # default path: use the FT-rich prompt when a detection adapter is active, else the base prompt
     is_finetuned = hasattr(model, "peft_config") and len(getattr(model, "peft_config", {})) > 0
-    # Ensure "detect" adapter is active — get_diffusion_prompt may have switched to "mitigate".
+    # get_diffusion_prompt may have switched to the mitigate adapter; switch back
     if is_finetuned and "detect" in getattr(model, "peft_config", {}):
         model.set_adapter("detect")
     prompt = HATEFUL_DETECTION_PROMPT_FT_RICH if is_finetuned else HATEFUL_DETECTION_PROMPT

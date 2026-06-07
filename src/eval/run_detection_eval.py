@@ -45,8 +45,21 @@ from vlm import (
     detect_hateful_meme,
     detect_hateful_meme_cls_head,
     detect_hate_type,
+    run_vlm,
 )
 from utils import parse_hateful_response, parse_hate_type_response
+from prompt import BASELINE_V2_EXAMPLE_IDS, ZEROSHOT_DETECTION_PROMPT
+from affect_prompting import CATEGORIZED_V2_EXAMPLE_IDS
+
+# Maps the public --pipeline choice to the internal detect_hateful_meme(pipeline=...) value.
+_PIPELINE_MAP = {
+    "fewshot_synthetic":  "baseline",        # FEWSHOT_SYNTHETIC_PROMPT — 17 synthetic calibration examples
+    "fewshot_real":       "baseline_v2",     # BASELINE_V2_PROMPT — 4 real labeled examples (exclude IDs from metrics)
+    "sentiment_single":   "single_affect",
+    "sentiment_chained":  "affect",
+    "category_sentiment": "categorized",
+    "category_fewshot":   "categorized_v2",
+}
 
 FIELDNAMES = [
     "id", "img", "label_true", "text",
@@ -54,10 +67,6 @@ FIELDNAMES = [
     "modality_type", "error",
 ]
 
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 def load_jsonl(path: Path):
     with open(path) as f:
@@ -70,10 +79,6 @@ def load_existing_ids(csv_path: Path) -> set:
     with open(csv_path, newline="") as f:
         return {int(row["id"]) for row in csv.DictReader(f)}
 
-
-# ---------------------------------------------------------------------------
-# Phase 1 — inference
-# ---------------------------------------------------------------------------
 
 def run_inference(args):
     samples  = load_jsonl(Path(args.jsonl))
@@ -126,7 +131,7 @@ def run_inference(args):
                 "error":          "",
             }
 
-            # --- detection --------------------------------------------------
+            # detection
             try:
                 if cls_head is not None:
                     # Forward pass only — no generation, no JSON to parse.
@@ -136,7 +141,15 @@ def run_inference(args):
                     )
                 else:
                     # Generative path — VLM produces a JSON blob to parse.
-                    raw = detect_hateful_meme(vlm, processor, img_path)
+                    if args.pipeline == "default":
+                        # main's original adapter-aware detection.
+                        raw = detect_hateful_meme(vlm, processor, img_path)
+                    elif args.pipeline == "zeroshot":
+                        raw = run_vlm(vlm, processor, img_path,
+                                      ZEROSHOT_DETECTION_PROMPT, temperature=0.95)
+                    else:
+                        raw = detect_hateful_meme(vlm, processor, img_path,
+                                                  pipeline=_PIPELINE_MAP[args.pipeline])
                     is_hateful, prob, description = parse_hateful_response(raw)
                     row["description"] = description.replace("\n", " ")
 
@@ -152,7 +165,7 @@ def run_inference(args):
                 f.flush()
                 continue
 
-            # --- per-modality (only on ground-truth hateful) -----------------
+            # per-modality, only on ground-truth hateful
             if args.modality_analysis and int(sample["label"]) == 1:
                 try:
                     raw_type = detect_hate_type(vlm, processor, img_path)
@@ -166,10 +179,6 @@ def run_inference(args):
 
     print(f"\n[info] Inference complete → {out_path}", file=sys.stderr)
 
-
-# ---------------------------------------------------------------------------
-# Phase 2 — metrics
-# ---------------------------------------------------------------------------
 
 def compute_metrics(args):
     out_path = Path(args.output)
@@ -215,7 +224,7 @@ def compute_metrics(args):
     print(f"  {'true=0 (non-hateful)':20}  {cm[0,0]:5d}    {cm[0,1]:5d}")
     print(f"  {'true=1 (hateful)':20}  {cm[1,0]:5d}    {cm[1,1]:5d}")
 
-    # --- per-modality F1 ---------------------------------------------------
+    # per-modality F1
     mod_rows = [r for r in valid
                 if r.get("modality_type") and r["modality_type"] not in ("", "parse_error")]
     if mod_rows:
@@ -237,10 +246,6 @@ def compute_metrics(args):
     print(f"\n  Summary saved → {summary_path}")
 
 
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
-
 def main():
     parser = argparse.ArgumentParser(description="Detection evaluation for UnHateMemeDL")
     parser.add_argument("--jsonl",     required=True,  help="Path to eval JSONL file")
@@ -257,6 +262,16 @@ def main():
                              "When set, detection uses a forward pass instead of generation.")
     parser.add_argument("--metrics_only",      action="store_true", help="Skip inference, only compute metrics from existing CSV")
     parser.add_argument("--modality_analysis", action="store_true", help="Run detect_hate_type on hateful images for per-modality F1")
+    parser.add_argument("--pipeline", default="default",
+                        choices=["default", "zeroshot",
+                                 "fewshot_synthetic", "fewshot_real",
+                                 "sentiment_single", "sentiment_chained",
+                                 "category_sentiment", "category_fewshot"],
+                        help="Prompting pipeline for the generative path (default: 'default' — "
+                             "main's adapter-aware detection). Other options: zeroshot | "
+                             "fewshot_synthetic | fewshot_real | sentiment_single | "
+                             "sentiment_chained | category_sentiment | category_fewshot. "
+                             "Ignored when --cls_head_path is set.")
     args = parser.parse_args()
 
     if args.adapter_path and args.cls_head_path:
@@ -264,6 +279,17 @@ def main():
 
     if not args.img_dir:
         parser.error("--img_dir is required")
+
+    print(f"[info] Pipeline: {args.pipeline}", file=sys.stderr)
+    if args.pipeline == "fewshot_real":
+        print(f"[info] Few-shot example IDs (exclude from metrics): {BASELINE_V2_EXAMPLE_IDS}",
+              file=sys.stderr)
+    elif args.pipeline == "category_fewshot":
+        all_ids = [id_ for ids in CATEGORIZED_V2_EXAMPLE_IDS.values() for id_ in ids]
+        print(f"[info] Few-shot example IDs (exclude from metrics): {sorted(set(all_ids))}",
+              file=sys.stderr)
+        print(f"[info] Per-category breakdown: {CATEGORIZED_V2_EXAMPLE_IDS}", file=sys.stderr)
+
     run_inference(args)
 
 
