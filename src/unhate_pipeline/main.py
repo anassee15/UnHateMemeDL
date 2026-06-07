@@ -44,16 +44,6 @@ def plan_image(vlm, vlm_processor, image_path, cls_head=None, thinking=True):
     return {"image_path": str(image_path), "probability": probability, "mitigation": mitigation}
 
 
-def release_vlm(vlm, cls_head=None):
-    """Free the VLM (and head) so the diffusion model can use the full GPU."""
-    del vlm
-    if cls_head is not None:
-        del cls_head
-    gc.collect()
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-
-
 def apply_mitigation(diffusion_model, plan):
     image_path = Path(plan["image_path"])
     mitigated_dir = image_path.parent / "mitigated"
@@ -132,8 +122,18 @@ def main():
         (plans_dir / f"{image_path.stem}.json").write_text(json.dumps(plan, indent=2))
         plans.append(plan)
 
-    release_vlm(vlm, cls_head)
-    print("[info] VLM released; GPU memory reclaimed.", file=sys.stderr)
+    # Drop every reference to the VLM in this scope so it can be garbage
+    # collected, then return its VRAM to the allocator before loading diffusion.
+    # A del inside a helper would only clear that helper's local name, not these.
+    del vlm, vlm_processor
+    if cls_head is not None:
+        del cls_head
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
+        print(f"[info] VLM released; CUDA memory now allocated: "
+              f"{torch.cuda.memory_allocated() / 1e9:.2f} GB", file=sys.stderr)
 
     # Phase 2: load the diffusion model with the full GPU and apply the saved plans.
     print(f"[info] Loading diffusion model: {args.diffusion_model_name}", file=sys.stderr)
