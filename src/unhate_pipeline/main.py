@@ -1,4 +1,6 @@
 import sys
+import gc
+import json
 import argparse
 
 import torch
@@ -15,23 +17,12 @@ from vlm import (
     get_diffusion_prompt,
 )
 
+# Below this probability the meme is treated as non-hateful and passed through.
+PASSTHROUGH_THRESHOLD = 0.5
 
-def run_pipeline(vlm, vlm_processor, diffusion_model, image_path, cls_head=None,
-                 thinking: bool = True):
-    image = load_image(str(image_path))
-    mitigated_dir = image_path.parent / "mitigated"
-    mitigated_dir.mkdir(exist_ok=True)
 
-    # ── Detection ─────────────────────────────────────────────────────────────
-    # Two modes depending on whether a classification head was loaded:
-    #
-    #   cls_head provided → forward pass only, no generation.
-    #     Fast, deterministic, no risk of malformed JSON output.
-    #     Returns (is_hateful: bool, probability: float).
-    #
-    #   no cls_head → VLM generates a JSON response (original behaviour).
-    #     Slower, but also produces a description used for logging.
-    #
+def plan_image(vlm, vlm_processor, image_path, cls_head=None, thinking=True):
+    """Detect the meme and, if hateful, generate its mitigation plan with the VLM."""
     if cls_head is not None:
         is_hateful, probability = detect_hateful_meme_cls_head(
             vlm, vlm_processor, cls_head, image_path
@@ -43,28 +34,43 @@ def run_pipeline(vlm, vlm_processor, diffusion_model, image_path, cls_head=None,
         print(f"\nHateful detection output:\n{hateful_response}\n")
         is_hateful, probability, _ = parse_hateful_response(hateful_response)
 
-    if probability < 0.2:
-        print("The meme is not hateful — passing through unchanged.")
-        image.save(mitigated_dir / f"{image_path.stem}_mitigated.png")
-        return
+    if probability < PASSTHROUGH_THRESHOLD:
+        return {"image_path": str(image_path), "probability": probability, "mitigation": None}
 
-    # ── Mitigation prompt generation ──────────────────────────────────────────
-    # Always uses the VLM generatively, regardless of detection mode.
-    # The classification head is only for the binary detection decision;
-    # generating a structured diffusion plan always requires generation.
     print("[info] Generating diffusion prompt...", file=sys.stderr)
-    diffusion_prompt = get_diffusion_prompt(
-        vlm, vlm_processor, image_path, thinking=thinking,
-    )
+    diffusion_prompt = get_diffusion_prompt(vlm, vlm_processor, image_path, thinking=thinking)
     print(f"\nGenerated diffusion prompt:\n{diffusion_prompt}\n")
     mitigation = parse_prompt_generation(diffusion_prompt)
+    return {"image_path": str(image_path), "probability": probability, "mitigation": mitigation}
 
-    # ── Image mitigation ──────────────────────────────────────────────────────
+
+def release_vlm(vlm, cls_head=None):
+    """Free the VLM (and head) so the diffusion model can use the full GPU."""
+    del vlm
+    if cls_head is not None:
+        del cls_head
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+
+def apply_mitigation(diffusion_model, plan):
+    image_path = Path(plan["image_path"])
+    mitigated_dir = image_path.parent / "mitigated"
+    mitigated_dir.mkdir(exist_ok=True)
+    out_path = mitigated_dir / f"{image_path.stem}_mitigated.png"
+
+    image = load_image(str(image_path))
+    if plan["mitigation"] is None:
+        print(f"[info] {image_path.name}: not hateful — passing through unchanged.")
+        image.save(out_path)
+        return
+
     generator = torch.Generator(
         device="cuda" if torch.cuda.is_available() else "cpu"
     ).manual_seed(42)
-    mitigated_image = mitigate_image(diffusion_model, image, mitigation, generator=generator)
-    mitigated_image.save(mitigated_dir / f"{image_path.stem}_mitigated.png")
+    mitigated_image = mitigate_image(diffusion_model, image, plan["mitigation"], generator=generator)
+    mitigated_image.save(out_path)
 
 
 def main():
@@ -87,6 +93,9 @@ def main():
     parser.add_argument("--no_thinking", action="store_true",
                         help="Disable the step-by-step CoT reasoning block in the "
                              "mitigation prompt. On by default.")
+    parser.add_argument("--diffusion_offload", action="store_true",
+                        help="Use sequential CPU offload for the diffusion model instead "
+                             "of loading it fully on CUDA. Slower, for low-VRAM GPUs.")
     args = parser.parse_args()
 
     if args.adapter_path and args.cls_head_path:
@@ -97,37 +106,44 @@ def main():
     print(f"[info] VLM: {args.vlm_name}", file=sys.stderr)
     print(f"[info] Data path: {args.data_path}", file=sys.stderr)
 
-    vlm, vlm_processor = instantiate_vlm(
-        args.vlm_name, args.cache_dir, args.adapter_path,
-        mitigation_adapter_path=args.mitigation_adapter,
-    )
-
-    cls_head = None
-    if args.cls_head_path:
-        print(f"[info] Loading classification head from {args.cls_head_path}",
-              file=sys.stderr)
-        cls_head = load_cls_head(vlm, args.cls_head_path)
-
-    print(f"[info] Loading diffusion model: {args.diffusion_model_name}", file=sys.stderr)
-    diffusion_model = instantiate_diffusion(
-        args.diffusion_model_name, cache_dir=args.cache_dir
-    )
-
     image_paths = sorted(Path(args.data_path).glob("*.png"))
     if not image_paths:
         print(f"[error] No .png images found in: {args.data_path}", file=sys.stderr)
         sys.exit(1)
-
     print(f"[info] Found {len(image_paths)} image(s).", file=sys.stderr)
 
+    # Phase 1: run all VLM work (detection + mitigation plans), then release the VLM.
+    vlm, vlm_processor = instantiate_vlm(
+        args.vlm_name, args.cache_dir, args.adapter_path,
+        mitigation_adapter_path=args.mitigation_adapter,
+    )
+    cls_head = None
+    if args.cls_head_path:
+        print(f"[info] Loading classification head from {args.cls_head_path}", file=sys.stderr)
+        cls_head = load_cls_head(vlm, args.cls_head_path)
+
+    plans_dir = Path(args.data_path) / "plans"
+    plans_dir.mkdir(exist_ok=True)
+    plans = []
     for image_path in image_paths:
-        print(f"\n[info] Processing image: {image_path}", file=sys.stderr)
-        run_pipeline(
-            vlm, vlm_processor, diffusion_model, image_path,
-            cls_head=cls_head, thinking=not args.no_thinking,
-        )
+        print(f"\n[info] [VLM] Planning: {image_path}", file=sys.stderr)
+        plan = plan_image(vlm, vlm_processor, image_path,
+                          cls_head=cls_head, thinking=not args.no_thinking)
+        (plans_dir / f"{image_path.stem}.json").write_text(json.dumps(plan, indent=2))
+        plans.append(plan)
+
+    release_vlm(vlm, cls_head)
+    print("[info] VLM released; GPU memory reclaimed.", file=sys.stderr)
+
+    # Phase 2: load the diffusion model with the full GPU and apply the saved plans.
+    print(f"[info] Loading diffusion model: {args.diffusion_model_name}", file=sys.stderr)
+    diffusion_model = instantiate_diffusion(
+        args.diffusion_model_name, cache_dir=args.cache_dir, offload=args.diffusion_offload,
+    )
+    for plan in plans:
+        print(f"\n[info] [Diffusion] Mitigating: {plan['image_path']}", file=sys.stderr)
+        apply_mitigation(diffusion_model, plan)
 
 
 if __name__ == "__main__":
     main()
-  
