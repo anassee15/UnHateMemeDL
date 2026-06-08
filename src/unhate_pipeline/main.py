@@ -102,7 +102,7 @@ def main():
         sys.exit(1)
     print(f"[info] Found {len(image_paths)} image(s).", file=sys.stderr)
 
-    # Phase 1: run all VLM work (detection + mitigation plans), then release the VLM.
+    # run all VLM work before touching the diffusion model, then free the VLM
     vlm, vlm_processor = instantiate_vlm(
         args.vlm_name, args.cache_dir, args.adapter_path,
         mitigation_adapter_path=args.mitigation_adapter,
@@ -135,7 +135,7 @@ def main():
         print(f"[info] VLM released; CUDA memory now allocated: "
               f"{torch.cuda.memory_allocated() / 1e9:.2f} GB", file=sys.stderr)
 
-    # Phase 2: load the diffusion model with the full GPU and apply the saved plans.
+    # load the diffusion model only after the VLM is freed, so it gets the full GPU
     print(f"[info] Loading diffusion model: {args.diffusion_model_name}", file=sys.stderr)
     diffusion_model = instantiate_diffusion(
         args.diffusion_model_name, cache_dir=args.cache_dir, offload=args.diffusion_offload,

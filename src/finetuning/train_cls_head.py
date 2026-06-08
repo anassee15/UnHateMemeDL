@@ -215,8 +215,7 @@ class VLMWithClassificationHead(nn.Module):
         labels: torch.Tensor | None = None,
         **kwargs,
     ) -> SequenceClassifierOutput:
-        # Step 1: frozen VLM forward (no gradient graph, saves ~62 GB of
-        # intermediate activations that would otherwise be retained for backprop)
+        # frozen VLM forward, no gradient graph (saves ~62 GB of activations)
         with torch.no_grad():
             outputs = self.vlm(
                 input_ids=input_ids,
@@ -225,7 +224,7 @@ class VLMWithClassificationHead(nn.Module):
                 **kwargs,
             )
 
-        # Step 2: last non-padding token of the final transformer layer
+        # last non-padding token of the final transformer layer
         last_hidden = outputs.hidden_states[-1]          # (B, T, D)
         if attention_mask is not None:
             # attention_mask is 1 for real tokens, 0 for padding (right-padded)
@@ -238,10 +237,8 @@ class VLMWithClassificationHead(nn.Module):
         batch_idx = torch.arange(last_hidden.size(0), device=last_hidden.device)
         pooled = last_hidden[batch_idx, seq_lengths]     # (B, D)
 
-        # Step 3: classification head
         logits = self.classifier(pooled)                 # (B, 1)
 
-        # Step 4: loss
         loss = None
         if labels is not None:
             loss = F.binary_cross_entropy_with_logits(
@@ -424,7 +421,6 @@ def evaluate_final(model, val_dataset, collate, output_dir: Path):
     return f1, auroc
 
 
-#  Main 
 def main():
     logging.basicConfig(
         level=logging.WARNING,

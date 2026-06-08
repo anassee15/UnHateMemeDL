@@ -394,7 +394,6 @@ def evaluate_f1(model, processor, val_dataset, max_new_tokens: int = 512,
     return f1, auroc
 
 
-#  Main 
 
 def main():
     logging.basicConfig(

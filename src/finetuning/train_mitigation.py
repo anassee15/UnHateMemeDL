@@ -313,7 +313,6 @@ def evaluate_mitigation(model, processor, val_dataset, max_new_tokens: int = 320
     return validity_rate, completeness_rate, loc_accuracy
 
 
-#  Main 
 def main():
     logging.basicConfig(
         level=logging.WARNING,
