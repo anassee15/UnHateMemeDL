@@ -56,9 +56,7 @@ from vlm import instantiate_vlm, detect_hateful_meme, get_diffusion_prompt
 from diffusion import instantiate_diffusion, mitigate_image
 from utils import parse_hateful_response, parse_prompt_generation
 
-# ---------------------------------------------------------------------------
 # CSV schema
-# ---------------------------------------------------------------------------
 
 FIELDNAMES = [
     "id", "img", "label_true",
@@ -70,10 +68,6 @@ FIELDNAMES = [
     "mitigated_path", "error",
 ]
 
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 def load_jsonl(path: Path):
     with open(path) as f:
@@ -103,9 +97,7 @@ def open_csv_writer(path: Path, append: bool):
     return f, writer
 
 
-# ---------------------------------------------------------------------------
-# Phase 1 — run mitigation pipeline on hateful images
-# ---------------------------------------------------------------------------
+# run the mitigation pipeline on hateful images
 
 def run_mitigation(args):
     samples  = load_jsonl(Path(args.jsonl))
@@ -181,9 +173,7 @@ def run_mitigation(args):
     print(f"\n[info] Mitigation complete → {out_dir}", file=sys.stderr)
 
 
-# ---------------------------------------------------------------------------
-# Phase 2 — VLM judge on mitigated images (get prob_after)
-# ---------------------------------------------------------------------------
+# re-run VLM detection on mitigated images to get prob_after
 
 def run_judge(args):
     samples  = load_jsonl(Path(args.jsonl))
@@ -258,10 +248,6 @@ def run_judge(args):
 
     print(f"\n[info] Judge complete → {out_path}", file=sys.stderr)
 
-
-# ---------------------------------------------------------------------------
-# Phase 3 — compute metrics
-# ---------------------------------------------------------------------------
 
 def _try_import(pkg, pip_name=None):
     import importlib
@@ -406,9 +392,7 @@ def compute_metrics(args):
 
     sep = "=" * 56
 
-    # ------------------------------------------------------------------
     # Axis A — Toxicity Reduction
-    # ------------------------------------------------------------------
     prob_before = np.array([float(r["prob_before"]) for r in hateful_rows
                             if r.get("prob_before")], dtype=float)
     prob_after  = np.array([float(r["prob_after"])  for r in hateful_rows], dtype=float)
@@ -446,9 +430,7 @@ def compute_metrics(args):
             print(f"    After  : {da.mean():.4f}")
             print(f"    TR%    : {((db - da) / np.where(db > 0, db, 1)).mean()*100:.1f}%")
 
-    # ------------------------------------------------------------------
     # Axis B — Content Preservation
-    # ------------------------------------------------------------------
     print(f"\n{sep}")
     print("MITIGATION METRICS — AXIS B: Content Preservation")
     print(sep)
@@ -492,18 +474,14 @@ def compute_metrics(args):
             arr = np.array([s for s in ssim_scores if not np.isnan(s)])
             print(f"  SSIM           (n={len(arr)}): {arr.mean():.4f}")
 
-    # ------------------------------------------------------------------
     # Joint metric
-    # ------------------------------------------------------------------
     clip_threshold = 0.20  # cosine similarity threshold for "coherent"
     if clip_rows and clip_scores:
         cs = np.array(clip_scores)
         joint = ((prob_after[:len(cs)] < 0.5) & (cs > clip_threshold)).mean() * 100
         print(f"\n  % non-hateful AND coherent (CLIPScore>{clip_threshold}): {joint:.1f}%")
 
-    # ------------------------------------------------------------------
     # MPS — Multimodal Preservation Score
-    # ------------------------------------------------------------------
     mps_by_id: dict = {}
     if img_root:
         mps_rows = [r for r in hateful_rows
@@ -531,9 +509,7 @@ def compute_metrics(args):
         print(f"  MPS (mean)   : {np.mean(valid_mps):.4f}")
         print(f"  MPS (median) : {np.median(valid_mps):.4f}")
 
-    # ------------------------------------------------------------------
     # Over-sanitization (label=0)
-    # ------------------------------------------------------------------
     print(f"\n{sep}")
     print("FAILURE-MODE: Over-sanitization (label=0 images)")
     print(sep)
@@ -547,9 +523,7 @@ def compute_metrics(args):
     else:
         print("  [skip] --det_csv not found")
 
-    # ------------------------------------------------------------------
     # Pareto CSV (per-image TR% vs BERTScore)
-    # ------------------------------------------------------------------
     pareto_path = Path(args.output_csv).with_suffix(".pareto.csv")
     pareto_rows = []
     for j, r in enumerate(hateful_rows):
@@ -575,10 +549,6 @@ def compute_metrics(args):
     print(sep)
 
 
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
-
 def main():
     parser = argparse.ArgumentParser(description="Mitigation evaluation for UnHateMemeDL")
 
@@ -593,7 +563,6 @@ def main():
     parser.add_argument("--adapter_path",            default=None, help="Detection LoRA adapter path")
     parser.add_argument("--mitigation_adapter_path", default=None, help="Mitigation LoRA adapter path")
 
-    # Phase flags
     parser.add_argument("--run_mitigation",  action="store_true", help="Phase 1: run pipeline on hateful images")
     parser.add_argument("--run_judge",       action="store_true", help="Phase 2: re-run VLM on mitigated images")
     parser.add_argument("--compute_metrics", action="store_true", help="Phase 3: compute all metrics")

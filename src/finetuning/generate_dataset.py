@@ -455,10 +455,10 @@ def main():
     n_non_hateful_avail = sum(r["label"] == 0 for r in records)
     print(f"Available: {len(records)} total ({n_hateful_avail} hateful, {n_non_hateful_avail} not_hateful)")
 
-    # Phase 1: hateful memes
+    # hateful memes
     hateful_sample = sample_phase(records, label=1, target=args.hateful_target, seed=args.seed)
 
-    # Phase 2: non-hateful to reach 60/40 split
+    # non-hateful, to reach the 60/40 split
     # 60% hateful → total = hateful_target / 0.6, non-hateful = total * 0.4
     non_hateful_target = round(args.hateful_target * 2 / 3)  # 1000 hateful -> 667 non-hateful ≈ 60/40
     non_hateful_sample = sample_phase(records, label=0, target=non_hateful_target, seed=args.seed + 1)
@@ -470,7 +470,7 @@ def main():
     client = anthropic.Anthropic(api_key=args.api_key)
     usage_totals = {"input": 0, "output": 0, "cache_creation": 0, "cache_read": 0}
 
-    # Phase 1: hateful 
+    # hateful
     run_phase(client, hateful_sample, done_ids, output_path, args.delay, "Phase 1 — Hateful memes", usage_totals)
 
     # Balance check before Phase 2 

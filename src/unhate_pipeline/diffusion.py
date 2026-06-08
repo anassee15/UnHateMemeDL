@@ -7,7 +7,7 @@ from draw_text import draw_meme_text
 from prompt import ERASE_TEXT_PROMPT
 
 
-def instantiate_diffusion(model_name: str, cache_dir: str | None =None):
+def instantiate_diffusion(model_name: str, cache_dir: str | None =None, offload: bool = True):
     torch_dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
     print(f"[info] Using dtype: {torch_dtype}", file=sys.stderr)
     print(f"[info] Loading diffusion model from repo: {model_name}", file=sys.stderr)
@@ -17,7 +17,12 @@ def instantiate_diffusion(model_name: str, cache_dir: str | None =None):
         torch_dtype=torch_dtype,
         cache_dir=cache_dir,
     )
-    pipe.enable_sequential_cpu_offload()
+    # offload keeps memory low when the VLM also lives on the GPU; full CUDA is
+    # faster and safe once the VLM has been released (see main.py two-phase run).
+    if offload:
+        pipe.enable_sequential_cpu_offload()
+    else:
+        pipe.to("cuda" if torch.cuda.is_available() else "cpu")
     return pipe
 
 

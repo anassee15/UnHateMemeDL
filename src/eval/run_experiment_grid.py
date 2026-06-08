@@ -2,29 +2,41 @@
 """
 run_experiment_grid.py — Flexible multi-experiment grid evaluation with YAML config.
 
-Configuration is loaded from a YAML file (e.g., experiments.yaml). The script supports
-two-phase mitigation optimization (VLM + diffusion never loaded simultaneously) and
-N repetitions per experiment for statistical significance.
+Configuration is loaded from a YAML file (e.g., experiments.yaml). The VLM and the
+diffusion model are never loaded at the same time, and each experiment can be run for
+N repetitions.
+
+Stages: detection, prompt, diffusion, judge, metrics. Each reads the previous
+stage's artifacts from disk, so stages can run separately. Stage selection per
+experiment via a YAML 'stages:' list; --stages overrides it globally. If an
+experiment has no 'stages:', they are derived from run_mitigation/mitigation_only.
 
 Usage
 -----
-  # Run all experiments from config file
+  # Whole pipeline, all experiments
   python src/eval/run_experiment_grid.py --config experiments.yaml
 
-  # Override n_reps and filter eval types
-  python src/eval/run_experiment_grid.py --config experiments.yaml --n_reps 5 --eval_types baseline cls_head
+  # Detection only
+  python src/eval/run_experiment_grid.py --config experiments.yaml --stages detection
 
-  # Detection only (skip mitigation)
-  python src/eval/run_experiment_grid.py --config experiments.yaml --skip_mitigation
+  # Diffusion prompt generation only
+  python src/eval/run_experiment_grid.py --config experiments.yaml --stages prompt
 
-  # Recompute metrics (no GPU)
-  python src/eval/run_experiment_grid.py --config experiments.yaml --metrics_only
+  # Mitigation (diffusion) only
+  python src/eval/run_experiment_grid.py --config experiments.yaml --stages diffusion
 
-  # Aggregate results
+  # Prompt generation + mitigation
+  python src/eval/run_experiment_grid.py --config experiments.yaml --stages prompt diffusion
+
+  # Detection + prompt generation
+  python src/eval/run_experiment_grid.py --config experiments.yaml --stages detection prompt
+
+  # Re-aggregate summary.csv (no GPU)
   python src/eval/run_experiment_grid.py --config experiments.yaml --aggregate_only
 """
 
 import sys
+import gc
 import json
 import csv
 import time
@@ -39,9 +51,24 @@ from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "unhate_pipeline"))
 
-from vlm import instantiate_vlm, detect_hateful_meme, detect_hateful_meme_cls_head, get_diffusion_prompt, load_cls_head
+from vlm import (
+    instantiate_vlm, detect_hateful_meme, detect_hateful_meme_cls_head,
+    get_diffusion_prompt, load_cls_head, run_vlm,
+)
 from diffusion import instantiate_diffusion, mitigate_image
 from utils import parse_hateful_response, parse_prompt_generation
+from prompt import ZEROSHOT_DETECTION_PROMPT
+
+# Maps a public --pipeline name to the internal detect_hateful_meme(pipeline=...) value.
+# "default" keeps main's adapter-aware behavior; "zeroshot" is handled separately.
+_PIPELINE_MAP = {
+    "fewshot_synthetic":  "baseline",
+    "fewshot_real":       "baseline_v2",
+    "sentiment_single":   "single_affect",
+    "sentiment_chained":  "affect",
+    "category_sentiment": "categorized",
+    "category_fewshot":   "categorized_v2",
+}
 
 try:
     import yaml
@@ -50,14 +77,10 @@ except ImportError:
     sys.exit(1)
 
 
-# ============================================================
-# DEFAULT CONFIGURATION
-# ============================================================
-
 JSONL_PATH   = "data/eval_data/eval_490_balanced.jsonl"
 IMG_DIR      = "data/hateful-meme"   # Images root (JSONLs reference img/NNNN.png relative to this)
-OUTPUT_ROOT  = "report/full_eval"
-CACHE_DIR    = None
+OUTPUT_ROOT  = "report/lora_mitigate"
+CACHE_DIR    = "../hf_cache"
 DIFFUSION_MODEL = "black-forest-labs/FLUX.2-klein-9B"
 
 DET_FIELDNAMES = [
@@ -72,7 +95,7 @@ MIT_FIELDNAMES = [
     "detoxify_before", "detoxify_after",
     "hate_source", "hate_location",
     "original_text", "replacement_text", "diffusion_prompt",
-    "bertscore_f1", "clip_score", "ssim", "mps",
+    "bertscore_f1", "clip_score", "ssim",
     "mitigated_path", "error",
     "t_prompt_s", "t_diffusion_s",
 ]
@@ -86,16 +109,12 @@ SUMMARY_FIELDNAMES = [
     "det_mean_s", "det_std_s", "det_median_s", "det_total_s",
     "n_mitigated",
     "mean_prob_before", "mean_prob_after", "mean_tr_pct", "pct_nonhateful_after",
-    "mean_bertscore_f1", "mean_clip_score", "mean_ssim", "mean_mps",
+    "mean_bertscore_f1", "mean_clip_score", "mean_ssim",
     "prompt_mean_s", "prompt_std_s",
     "diffusion_mean_s", "diffusion_std_s",
     "mit_total_mean_s",
 ]
 
-
-# ============================================================
-# UTILITIES
-# ============================================================
 
 def slugify(model_name: str) -> str:
     """Convert a HuggingFace model ID to a filesystem-safe slug."""
@@ -134,25 +153,8 @@ def _try_import(pkg: str, pip_name: str | None = None):
         return None
 
 
-def _summary_row_exists(summary_path: Path, eval_type: str, model_slug: str, rep: int) -> bool:
-    """Check if a summary row for (eval_type, model_slug, rep) already exists."""
-    if not summary_path.exists():
-        return False
-    key = (eval_type, model_slug, str(rep))
-    with open(summary_path, newline="") as f:
-        for r in csv.DictReader(f):
-            row_key = (r.get("eval_type", ""), r.get("model_slug", ""), r.get("rep", ""))
-            if row_key == key:
-                return True
-    return False
-
-
-# ============================================================
-# FUNCTIONS IMPORTED FROM run_full_eval.py
-# (Copied here for modularity; could be refactored into shared module)
-# ============================================================
-
-def run_detection(vlm, processor, samples: list[dict], img_root: Path, out_path: Path, *, cls_head=None) -> None:
+def run_detection(vlm, processor, samples: list[dict], img_root: Path, out_path: Path,
+                  *, cls_head=None, pipeline=None) -> None:
     done = load_existing_ids(out_path)
     todo = [s for s in samples if int(s["id"]) not in done]
 
@@ -192,7 +194,12 @@ def run_detection(vlm, processor, samples: list[dict], img_root: Path, out_path:
                 row["description"]    = ""
                 print(f"prob={prob:.3f} t={row['t_detect_s']}s (cls_head)", file=sys.stderr)
             else:
-                raw = detect_hateful_meme(vlm, processor, img_path)
+                if pipeline in (None, "default"):
+                    raw = detect_hateful_meme(vlm, processor, img_path)
+                elif pipeline == "zeroshot":
+                    raw = run_vlm(vlm, processor, img_path, ZEROSHOT_DETECTION_PROMPT, temperature=0.95)
+                else:
+                    raw = detect_hateful_meme(vlm, processor, img_path, pipeline=_PIPELINE_MAP[pipeline])
                 row["t_detect_s"] = f"{time.perf_counter() - t0:.3f}"
                 is_hateful, prob, description = parse_hateful_response(raw)
                 row["prob_pred"]      = prob
@@ -224,17 +231,23 @@ def compute_detection_metrics(det_path: Path) -> dict:
     n_errors = len(rows) - len(valid)
     print(f"[step2] {len(valid)} valid rows, {n_errors} errors.", file=sys.stderr)
 
+    if not valid:
+        print("[step2] No valid rows — skipping detection metrics.", file=sys.stderr)
+        return {"n_total": 0, "n_errors": n_errors}
+
     y_true = np.array([int(r["label_true"]) for r in valid])
     y_prob = np.array([float(r["prob_pred"]) for r in valid])
     y_pred = np.array([int(r["label_pred"]) for r in valid])
 
-    auroc    = roc_auc_score(y_true, y_prob)
+    # AUROC is undefined when only one class is present (e.g. --hateful_only)
+    auroc    = roc_auc_score(y_true, y_prob) if len(np.unique(y_true)) == 2 else float("nan")
     macro_f1 = f1_score(y_true, y_pred, average="macro")
     acc      = accuracy_score(y_true, y_pred)
     prec     = precision_score(y_true, y_pred, pos_label=1, zero_division=0)
     rec      = recall_score(y_true, y_pred, pos_label=1, zero_division=0)
     f1_hat   = f1_score(y_true, y_pred, pos_label=1, zero_division=0)
-    cm       = confusion_matrix(y_true, y_pred)
+    # force a 2x2 matrix so tn/fp/fn/tp unpack even with a single class
+    cm       = confusion_matrix(y_true, y_pred, labels=[0, 1])
     tn, fp, fn, tp = cm.ravel()
 
     times = [float(r["t_detect_s"]) for r in valid if r.get("t_detect_s")]
@@ -243,7 +256,7 @@ def compute_detection_metrics(det_path: Path) -> dict:
     sep = "=" * 52
     print(f"\n{sep}\nDETECTION METRICS\n{sep}", file=sys.stderr)
     print(f"  N={len(valid)}  hateful={y_true.sum()}  non-hateful={(~y_true.astype(bool)).sum()}")
-    print(f"  AUROC    : {auroc:.4f}")
+    print(f"  AUROC    : {auroc:.4f}" if not np.isnan(auroc) else "  AUROC    : n/a (single class)")
     print(f"  Macro-F1 : {macro_f1:.4f}")
     print(f"  Accuracy : {acc:.4f}")
     print(f"  TP={tp}  TN={tn}  FP={fp}  FN={fn}")
@@ -255,7 +268,7 @@ def compute_detection_metrics(det_path: Path) -> dict:
         "n_hateful":    int(y_true.sum()),
         "n_nonhateful": int((~y_true.astype(bool)).sum()),
         "n_errors":     n_errors,
-        "auroc":        round(auroc, 4),
+        "auroc":        round(auroc, 4) if not np.isnan(auroc) else "",
         "macro_f1":     round(macro_f1, 4),
         "accuracy":     round(acc, 4),
         "precision_hateful": round(prec, 4),
@@ -300,13 +313,16 @@ def run_mitigation_prompts(
             if det_row and det_row.get("prob_pred"):
                 prob_before = float(det_row["prob_pred"])
 
-            if prob_before < 0.2:
-                jpath.write_text(json.dumps({"skipped": "prob < 0.2", "prob": prob_before}))
-                print(f"  [{i+1}/{len(todo)}] {img_path.name}: prob={prob_before:.3f} < 0.2 → skip", file=sys.stderr)
+            if prob_before < 0.5:
+                jpath.write_text(json.dumps({"skipped": "prob < 0.5", "prob": prob_before}))
+                print(f"  [{i+1}/{len(todo)}] {img_path.name}: prob={prob_before:.3f} < 0.5 → skip", file=sys.stderr)
                 continue
 
+            t_p = time.perf_counter()
             raw_prompt = get_diffusion_prompt(vlm, processor, img_path)
             mitigation = parse_prompt_generation(raw_prompt)
+            # carry the prompt-generation time to the diffusion stage via the json
+            mitigation["_t_prompt_s"] = round(time.perf_counter() - t_p, 3)
             jpath.write_text(json.dumps(mitigation, ensure_ascii=False, indent=2))
             print(f"  [{i+1}/{len(todo)}] {img_path.name}", file=sys.stderr)
 
@@ -323,7 +339,11 @@ def run_mitigation_diffusion(
     mit_csv_path: Path, out_dir: Path,
     generator: torch.Generator,
     det_path: Path | None = None,
+    prompt_dir: Path | None = None,
 ) -> None:
+    prompt_dir = prompt_dir or out_dir
+    out_dir.mkdir(parents=True, exist_ok=True)
+    mit_csv_path.parent.mkdir(parents=True, exist_ok=True)
     det: dict = {}
     if det_path is not None and det_path.exists():
         with open(det_path, newline="") as f:
@@ -343,7 +363,7 @@ def run_mitigation_diffusion(
         sid = sample["id"]
         img_path = img_root / sample["img"]
         mit_path = out_dir / f"{sid}_mitigated.png"
-        jpath = out_dir / f"{sid}_intermediate.json"
+        jpath = prompt_dir / f"{sid}_intermediate.json"
 
         print(f"  [{i+1}/{len(todo)}] {img_path.name}", file=sys.stderr)
 
@@ -370,7 +390,7 @@ def run_mitigation_diffusion(
                 row["t_diffusion_s"] = "0"
                 image = Image.open(img_path).convert("RGB")
                 image.save(mit_path)
-                print(f"    Skipped (prob < 0.2)", file=sys.stderr)
+                print(f"    Skipped (prob < 0.5)", file=sys.stderr)
                 append_csv_row(mit_csv_path, MIT_FIELDNAMES, row)
                 continue
 
@@ -391,7 +411,7 @@ def run_mitigation_diffusion(
             row["original_text"]    = (mitigation_data.get("original_text") or "").replace("\n", "\\n")
             row["replacement_text"] = (mitigation_data.get("replacement_text") or "").replace("\n", "\\n")
             row["diffusion_prompt"] = mitigation_data.get("diffusion_prompt", "")
-            row["t_prompt_s"]       = "0"
+            row["t_prompt_s"]       = mitigation_data.get("_t_prompt_s", "")
 
             print(f"    diffusion={row['t_diffusion_s']}s", file=sys.stderr)
 
@@ -445,7 +465,7 @@ def run_judge(vlm, processor, mit_csv_path: Path, out_dir: Path) -> None:
     print(f"[step4] Judge complete → {mit_csv_path}", file=sys.stderr)
 
 
-def compute_mitigation_metrics(mit_csv_path: Path, img_root: Path) -> dict:
+def compute_mitigation_metrics(mit_csv_path: Path, img_root: Path, prob_before_lookup: dict | None = None) -> dict:
     if not mit_csv_path.exists():
         return {}
 
@@ -464,14 +484,24 @@ def compute_mitigation_metrics(mit_csv_path: Path, img_root: Path) -> dict:
     prob_after = np.array([float(r["prob_after"]) for r in hateful_rows], dtype=float)
     pct_nonhateful = (prob_after < 0.5).mean() * 100
 
-    # TR% only when prob_before is available (not in mitigation_only runs)
-    tr_rows = [r for r in hateful_rows if r.get("prob_before")]
-    tr_per_img = np.array([])
-    if tr_rows:
-        prob_before = np.array([float(r["prob_before"]) for r in tr_rows], dtype=float)
-        prob_after_tr = np.array([float(r["prob_after"]) for r in tr_rows], dtype=float)
-        with np.errstate(divide="ignore", invalid="ignore"):
-            tr_per_img = np.where(prob_before > 0, (prob_before - prob_after_tr) / prob_before, 0.0)
+    # TR%: prob_before is taken (in order) from the row's measured value, then from a
+    # source experiment's detection (prob_before_from), else assumed 1.0 (GT-hateful).
+    lookup = prob_before_lookup or {}
+    def _prob_before(r):
+        if r.get("prob_before"):
+            return float(r["prob_before"])
+        v = lookup.get(int(r["id"]))
+        if v:
+            return float(v)
+        return 1.0
+    n_assumed = sum(1 for r in hateful_rows
+                    if not r.get("prob_before") and not lookup.get(int(r["id"])))
+    if n_assumed:
+        print(f"[step5] prob_before assumed 1.0 for {n_assumed}/{len(hateful_rows)} "
+              f"GT-hateful rows (no detection available)", file=sys.stderr)
+    prob_before = np.array([_prob_before(r) for r in hateful_rows], dtype=float)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        tr_per_img = np.where(prob_before > 0, (prob_before - prob_after) / prob_before, 0.0)
 
     text_rows = [r for r in hateful_rows if r.get("original_text") and r.get("replacement_text")]
     orig_texts = [r["original_text"].replace("\\n", " ") for r in text_rows]
@@ -523,47 +553,20 @@ def compute_mitigation_metrics(mit_csv_path: Path, img_root: Path) -> dict:
         valid_ssim = [s for s in ssim_scores if not np.isnan(s)]
         mean_ssim = float(np.mean(valid_ssim)) if valid_ssim else float("nan")
 
-    mean_mps = float("nan")
-    mps_rows = [r for r in hateful_rows
-                if r.get("original_text") and r.get("replacement_text") and r.get("mitigated_path")]
-    if tf and mps_rows:
-        mps_model = tf.CLIPModel.from_pretrained("openai/clip-vit-base-patch32")
-        mps_proc  = tf.CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
-        mps_model.eval()
-        mps_scores = []
-        for r in mps_rows:
-            try:
-                orig_img = Image.open(img_root / r["img"]).convert("RGB")
-                mit_img  = Image.open(r["mitigated_path"]).convert("RGB")
-                with torch.no_grad():
-                    def _img_feat(im):
-                        inp = mps_proc(images=[im], return_tensors="pt")
-                        e = mps_model.get_image_features(**inp)
-                        return e / e.norm(dim=-1, keepdim=True)
-                    def _txt_feat(t):
-                        inp = mps_proc(text=[t], return_tensors="pt", padding=True, truncation=True)
-                        e = mps_model.get_text_features(**inp)
-                        return e / e.norm(dim=-1, keepdim=True)
-                    A = _img_feat(orig_img) + _txt_feat(r["original_text"].replace("\\n", " "))
-                    B = _img_feat(mit_img)  + _txt_feat(r["replacement_text"].replace("\\n", " "))
-                    A = A / A.norm(dim=-1, keepdim=True)
-                    B = B / B.norm(dim=-1, keepdim=True)
-                    mps_scores.append((A * B).sum().item())
-            except Exception:
-                mps_scores.append(float("nan"))
-        valid_mps = [s for s in mps_scores if not np.isnan(s)]
-        mean_mps = float(np.mean(valid_mps)) if valid_mps else float("nan")
-
-    t_prompt    = [float(r["t_prompt_s"])    for r in hateful_rows if r.get("t_prompt_s")]
-    t_diffusion = [float(r["t_diffusion_s"]) for r in hateful_rows if r.get("t_diffusion_s")]
-    tp_arr = np.array(t_prompt)    if t_prompt    else np.array([float("nan")])
-    td_arr = np.array(t_diffusion) if t_diffusion else np.array([float("nan")])
+    # time only the images that actually ran the full mitigation (skip passthrough/errored),
+    # keeping prompt/diffusion arrays parallel so the per-image total is well defined
+    processed = [r for r in hateful_rows
+                 if r.get("t_diffusion_s") and float(r["t_diffusion_s"]) > 0]
+    if processed:
+        tp_arr = np.array([float(r.get("t_prompt_s") or 0.0) for r in processed])
+        td_arr = np.array([float(r["t_diffusion_s"]) for r in processed])
+    else:
+        tp_arr = td_arr = np.array([float("nan")])
 
     sep = "=" * 52
     print(f"\n{sep}\nMITIGATION METRICS\n{sep}", file=sys.stderr)
     print(f"  N mitigated      : {len(hateful_rows)}")
-    if tr_rows:
-        print(f"  Mean prob_before : {prob_before.mean():.4f}")
+    print(f"  Mean prob_before : {prob_before.mean():.4f}")
     print(f"  Mean prob_after  : {prob_after.mean():.4f}")
     if tr_per_img.size:
         print(f"  Mean TR%         : {tr_per_img.mean()*100:.1f}%")
@@ -571,7 +574,6 @@ def compute_mitigation_metrics(mit_csv_path: Path, img_root: Path) -> dict:
     print(f"  BERTScore F1     : {mean_bert:.4f}" if not np.isnan(mean_bert) else "  BERTScore F1     : n/a")
     print(f"  CLIPScore        : {mean_clip:.4f}" if not np.isnan(mean_clip) else "  CLIPScore        : n/a")
     print(f"  SSIM             : {mean_ssim:.4f}" if not np.isnan(mean_ssim) else "  SSIM             : n/a")
-    print(f"  MPS              : {mean_mps:.4f}"  if not np.isnan(mean_mps)  else "  MPS              : n/a")
     print(f"  Prompt gen time  : {tp_arr.mean():.2f}s ± {tp_arr.std():.2f}s")
     print(f"  Diffusion time   : {td_arr.mean():.2f}s ± {td_arr.std():.2f}s")
     print(sep)
@@ -580,14 +582,13 @@ def compute_mitigation_metrics(mit_csv_path: Path, img_root: Path) -> dict:
 
     return {
         "n_mitigated":          len(hateful_rows),
-        "mean_prob_before":     _r(prob_before.mean()) if tr_rows else "",
+        "mean_prob_before":     _r(prob_before.mean()),
         "mean_prob_after":      _r(prob_after.mean()),
         "mean_tr_pct":          _r(tr_per_img.mean() * 100) if tr_per_img.size else "",
         "pct_nonhateful_after": _r(pct_nonhateful),
         "mean_bertscore_f1":    _r(mean_bert),
         "mean_clip_score":      _r(mean_clip),
         "mean_ssim":            _r(mean_ssim),
-        "mean_mps":             _r(mean_mps),
         "prompt_mean_s":        _r(tp_arr.mean()),
         "prompt_std_s":         _r(tp_arr.std()),
         "diffusion_mean_s":     _r(td_arr.mean()),
@@ -597,18 +598,21 @@ def compute_mitigation_metrics(mit_csv_path: Path, img_root: Path) -> dict:
 
 
 def save_summary_row(summary_path: Path, row: dict) -> None:
-    if _summary_row_exists(summary_path, row["eval_type"], row["model_slug"], row["rep"]):
-        key = (row["eval_type"], row["model_slug"], str(row["rep"]))
-        print(f"[step6] Summary row for {key} already exists — skipping.", file=sys.stderr)
-        return
+    # upsert: replace any existing row for the same (eval_type, model_slug, rep)
+    key = (row["eval_type"], row["model_slug"], str(row["rep"]))
+    existing = []
+    if summary_path.exists():
+        with open(summary_path, newline="") as f:
+            existing = [r for r in csv.DictReader(f)
+                        if (r.get("eval_type"), r.get("model_slug"), r.get("rep")) != key]
 
-    write_header = not summary_path.exists() or summary_path.stat().st_size == 0
-    with open(summary_path, "a", newline="") as f:
+    summary_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(summary_path, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=SUMMARY_FIELDNAMES, extrasaction="ignore")
-        if write_header:
-            writer.writeheader()
+        writer.writeheader()
+        writer.writerows(existing)
         writer.writerow(row)
-    print(f"[step6] Summary saved → {summary_path}", file=sys.stderr)
+    print(f"[metrics] Summary saved → {summary_path}", file=sys.stderr)
 
 
 def aggregate_results(summary_path: Path) -> None:
@@ -666,7 +670,9 @@ def aggregate_results(summary_path: Path) -> None:
     print(f"[aggregate] Aggregated summary → {agg_path}", file=sys.stderr)
 
     key_metrics = ["auroc", "macro_f1", "accuracy",
-                   "mean_bertscore_f1", "mean_clip_score", "mean_ssim", "mean_mps"]
+                   "mean_tr_pct", "pct_nonhateful_after",
+                   "mean_bertscore_f1", "mean_clip_score", "mean_ssim",
+                   "det_mean_s", "prompt_mean_s", "diffusion_mean_s"]
     header_cols = ["eval_type", "vlm_name", "n_reps"] + key_metrics
     col_w = 20
 
@@ -693,10 +699,6 @@ def aggregate_results(summary_path: Path) -> None:
     print("=" * (col_w * len(header_cols)), file=sys.stderr)
 
 
-# ============================================================
-# MAIN LOOP
-# ============================================================
-
 def load_config(config_path: Path) -> dict:
     """Load experiment configuration from YAML file."""
     with open(config_path) as f:
@@ -711,273 +713,259 @@ def normalize_config(config: dict) -> dict:
         models = []
         for m in exp_cfg.get("models", []):
             if isinstance(m, str):
-                # Simple string: just the model name
-                models.append({
-                    "vlm_name": m,
-                    "adapter_path": None,
-                    "mitigation_adapter_path": None,
-                    "cls_head_path": None,
-                })
+                models.append({"vlm_name": m, "adapter_path": None,
+                               "mitigation_adapter_path": None, "cls_head_path": None,
+                               "pipeline": None})
             elif isinstance(m, dict):
-                # Dict with model + optional paths
                 models.append({
                     "vlm_name": m.get("model") or m.get("vlm_name"),
                     "adapter_path": m.get("adapter_path"),
                     "mitigation_adapter_path": m.get("mitigation_adapter_path"),
                     "cls_head_path": m.get("cls_head_path"),
+                    "pipeline": m.get("pipeline"),
                 })
+        stages = exp_cfg.get("stages")
+        if stages is not None:
+            bad = [s for s in stages if s not in STAGES]
+            if bad:
+                raise ValueError(f"Experiment '{eval_type}': invalid stages {bad}; valid: {STAGES}")
         experiments[eval_type] = {
+            "stages": list(stages) if stages is not None else None,
             "run_mitigation": exp_cfg.get("run_mitigation", False),
             "mitigation_only": exp_cfg.get("mitigation_only", False),
+            "pipeline": exp_cfg.get("pipeline"),
+            "prob_before_from": exp_cfg.get("prob_before_from"),
             "models": models,
         }
     return experiments
 
 
+STAGES = ["detection", "prompt", "diffusion", "judge", "metrics"]
+
+
+def load_prob_before(out_root: Path, src_eval_type: str, slug: str, n_reps: int) -> dict:
+    """id -> prob_pred from a source experiment's detection CSV (reuse its prob_before)."""
+    for rep in range(n_reps):
+        det = out_root / f"{src_eval_type}_{slug}" / f"rep_{rep:02d}" / "detection_predictions.csv"
+        if det.exists():
+            with open(det, newline="") as f:
+                return {int(r["id"]): r["prob_pred"] for r in csv.DictReader(f) if r.get("prob_pred")}
+    return {}
+
+
+def needs_judging(base: Path, n_reps: int) -> bool:
+    """True if any mitigated image still lacks prob_after (judge not run yet)."""
+    for rep in range(n_reps):
+        mit_csv = base / f"rep_{rep:02d}" / "mitigation_results.csv"
+        if not mit_csv.exists():
+            continue
+        with open(mit_csv, newline="") as f:
+            for r in csv.DictReader(f):
+                if r.get("mitigated_path") and not r.get("prob_after") and not r.get("error"):
+                    return True
+    return False
+
+
+def resolve_stages(exp_cfg, cli_stages):
+    """Effective stages for an experiment: CLI override > YAML 'stages' > legacy flags."""
+    if cli_stages is not None:
+        return set(cli_stages)
+    if exp_cfg.get("stages") is not None:
+        return set(exp_cfg["stages"])
+    stages = {"detection", "metrics"}
+    if exp_cfg.get("run_mitigation"):
+        stages |= {"prompt", "diffusion", "judge"}
+    if exp_cfg.get("mitigation_only"):
+        stages.discard("detection")
+    return stages
+
+
+def load_vlm(model_cfg: dict, cache_dir):
+    vlm, processor = instantiate_vlm(
+        model_cfg["vlm_name"], cache_dir,
+        adapter_path=model_cfg.get("adapter_path"),
+        mitigation_adapter_path=model_cfg.get("mitigation_adapter_path"),
+    )
+    cls_head = load_cls_head(vlm, model_cfg["cls_head_path"]) if model_cfg.get("cls_head_path") else None
+    print(f"[load] VLM on {vlm.device}", file=sys.stderr)
+    return vlm, processor, cls_head
+
+
+def free_gpu():
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+
+def run_experiment(eval_type, exp_cfg, model_cfg, samples, img_root, out_root,
+                   summary_path, n_reps, cli_stages, cache_dir,
+                   diffusion_model, diffusion_offload):
+    vlm_name = model_cfg["vlm_name"]
+    slug = slugify(vlm_name)
+    base = out_root / f"{eval_type}_{slug}"
+    prompt_dir = base / "prompts"
+    pipeline = model_cfg.get("pipeline") or exp_cfg.get("pipeline")
+
+    stages = resolve_stages(exp_cfg, cli_stages)
+    do_detection = "detection" in stages
+    do_prompt    = "prompt"    in stages
+    do_diffusion = "diffusion" in stages
+    do_judge     = "judge"     in stages
+    do_metrics   = "metrics"   in stages
+
+    sep = "=" * 70
+    print(f"\n{sep}\nEXPERIMENT: {eval_type} | MODEL: {vlm_name} | stages: {sorted(stages)}\n{sep}",
+          file=sys.stderr)
+
+    def rep_dir(rep):
+        return base / f"rep_{rep:02d}"
+
+    # VLM: detection (+ prompt generation), then free the VLM
+    if do_detection or do_prompt:
+        vlm, processor, cls_head = load_vlm(model_cfg, cache_dir)
+        if do_detection:
+            for rep in range(n_reps):
+                print(f"[detection] rep {rep}", file=sys.stderr)
+                run_detection(vlm, processor, samples, img_root,
+                              rep_dir(rep) / "detection_predictions.csv",
+                              cls_head=cls_head, pipeline=pipeline)
+        if do_prompt:
+            det0 = rep_dir(0) / "detection_predictions.csv"
+            run_mitigation_prompts(vlm, processor, samples, img_root,
+                                   det0 if det0.exists() else None, prompt_dir)
+        del vlm, processor, cls_head
+        free_gpu()
+
+    # diffusion only, with the full GPU now that the VLM is gone
+    if do_diffusion:
+        diffusion = instantiate_diffusion(diffusion_model, cache_dir=cache_dir,
+                                          offload=diffusion_offload)
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        for rep in range(n_reps):
+            print(f"[diffusion] rep {rep}", file=sys.stderr)
+            rd = rep_dir(rep)
+            det_csv = rd / "detection_predictions.csv"
+            generator = torch.Generator(device=device).manual_seed(42 + rep)
+            run_mitigation_diffusion(diffusion, samples, img_root,
+                                     rd / "mitigation_results.csv", rd / "mitigated",
+                                     generator=generator,
+                                     det_path=det_csv if det_csv.exists() else None,
+                                     prompt_dir=prompt_dir)
+        del diffusion
+        free_gpu()
+
+    # auto-run judge before metrics when mitigated images still lack prob_after
+    if do_metrics and not do_judge and needs_judging(base, n_reps):
+        print("[judge] auto-enabled before metrics (mitigation results missing prob_after)",
+              file=sys.stderr)
+        do_judge = True
+
+    # VLM judge on the mitigated images
+    if do_judge:
+        vlm, processor, cls_head = load_vlm(model_cfg, cache_dir)
+        for rep in range(n_reps):
+            mit_csv = rep_dir(rep) / "mitigation_results.csv"
+            if mit_csv.exists():
+                print(f"[judge] rep {rep}", file=sys.stderr)
+                run_judge(vlm, processor, mit_csv, rep_dir(rep) / "mitigated")
+        del vlm, processor, cls_head
+        free_gpu()
+
+    # metrics + summary row (upserted, so this is safe to re-run)
+    if do_metrics:
+        # optionally reuse prob_before from another experiment's detection (e.g. baseline)
+        pb_lookup = None
+        if exp_cfg.get("prob_before_from"):
+            pb_lookup = load_prob_before(out_root, exp_cfg["prob_before_from"], slug, n_reps)
+            print(f"[metrics] reusing prob_before from '{exp_cfg['prob_before_from']}' "
+                  f"({len(pb_lookup)} ids)", file=sys.stderr)
+        for rep in range(n_reps):
+            rd = rep_dir(rep)
+            det_csv = rd / "detection_predictions.csv"
+            mit_csv = rd / "mitigation_results.csv"
+            det_metrics = compute_detection_metrics(det_csv) if det_csv.exists() else {}
+            mit_metrics = compute_mitigation_metrics(mit_csv, img_root, prob_before_lookup=pb_lookup) if mit_csv.exists() else {}
+            if not det_metrics and not mit_metrics:
+                continue
+            row = {"eval_type": eval_type, "rep": rep, "vlm_name": vlm_name, "model_slug": slug}
+            row.update(det_metrics)
+            row.update(mit_metrics)
+            save_summary_row(summary_path, row)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Multi-experiment grid evaluation from YAML config")
     parser.add_argument("--config", type=Path, required=True,
-                        help="Path to YAML configuration file (e.g., experiments.yaml)")
-    parser.add_argument("--jsonl", type=Path, default=None,
-                        help="Path to evaluation JSONL (default: data/eval_data/eval_490_balanced.jsonl)")
-    parser.add_argument("--img_dir", type=Path, default=None,
-                        help="Path to images root directory (default: data/hateful-meme)")
-    parser.add_argument("--output_root", type=Path, default=None,
-                        help="Path to output directory (default: report/full_eval)")
-    parser.add_argument("--n_reps", type=int, default=None,
-                        help="Override n_reps from config")
-    parser.add_argument("--skip_mitigation", action="store_true",
-                        help="Run detection only, skip mitigation phases")
-    parser.add_argument("--metrics_only", action="store_true",
-                        help="Skip all inference, recompute metrics from existing CSVs")
-    parser.add_argument("--aggregate_only", action="store_true",
-                        help="Skip all inference, just re-aggregate summary.csv")
-    parser.add_argument("--eval_types", nargs="+", default=None,
-                        help="Filter to specific eval types")
+                        help="YAML configuration file (e.g., experiments.yaml)")
+    parser.add_argument("--jsonl", type=Path, default=None)
+    parser.add_argument("--img_dir", type=Path, default=None)
+    parser.add_argument("--output_root", type=Path, default=None)
+    parser.add_argument("--cache_dir", default=None)
+    parser.add_argument("--diffusion_model", default=None,
+                        help=f"Diffusion model HF id (default: {DIFFUSION_MODEL})")
+    parser.add_argument("--n_reps", type=int, default=None, help="Override n_reps from config")
+    parser.add_argument("--stages", nargs="+", default=None, choices=STAGES,
+                        help="Stages to run (default: all). Examples: "
+                             "detection only '--stages detection'; "
+                             "prompt only '--stages prompt'; "
+                             "mitigation only '--stages diffusion'; "
+                             "prompt + mitigation '--stages prompt diffusion'; "
+                             "detection + prompt '--stages detection prompt'.")
+    parser.add_argument("--eval_types", nargs="+", default=None, help="Filter to specific eval types")
     parser.add_argument("--hateful_only", action="store_true",
-                        help="Test on hateful images only (label=1) for mitigation quality evaluation")
-    parser.add_argument("--mitigation_only", action="store_true",
-                        help="Skip detection, test mitigation pipeline only (prompt gen → diffusion → judge)")
+                        help="Evaluate on hateful images only (label=1)")
+    parser.add_argument("--limit", type=int, default=None,
+                        help="Use only the first N samples (quick smoke test)")
+    parser.add_argument("--diffusion_offload", action="store_true",
+                        help="Use CPU offload for the diffusion model (low-VRAM GPUs)")
+    parser.add_argument("--aggregate_only", action="store_true",
+                        help="Skip inference, just re-aggregate summary.csv")
     args = parser.parse_args()
 
-    # Load config
     if not args.config.exists():
         print(f"ERROR: Config file not found: {args.config}", file=sys.stderr)
         sys.exit(1)
-
     config = load_config(args.config)
     experiments = normalize_config(config)
 
-    # Use CLI args if provided, otherwise use defaults
     jsonl = Path(args.jsonl) if args.jsonl else Path(JSONL_PATH)
     img_root = Path(args.img_dir) if args.img_dir else Path(IMG_DIR)
     out_root = Path(args.output_root) if args.output_root else Path(OUTPUT_ROOT)
+    cache_dir = args.cache_dir if args.cache_dir is not None else CACHE_DIR
+    diffusion_model = args.diffusion_model or DIFFUSION_MODEL
     summary_path = out_root / "summary.csv"
     out_root.mkdir(parents=True, exist_ok=True)
-
-    samples = load_jsonl(jsonl)
-    print(f"Loaded {len(samples)} samples from {jsonl}", file=sys.stderr)
-
-    # Filter to hateful images only if requested
-    if args.hateful_only:
-        original_count = len(samples)
-        samples = [s for s in samples if int(s.get("label", 0)) == 1]
-        print(f"[hateful_only] Filtered: {original_count} → {len(samples)} hateful images", file=sys.stderr)
-
-    n_reps = args.n_reps if args.n_reps is not None else config.get("n_reps", 3)
-    experiments = {k: v for k, v in experiments.items()
-                   if args.eval_types is None or k in args.eval_types}
 
     if args.aggregate_only:
         aggregate_results(summary_path)
         return
 
-    # ====================================================================
-    # Main experiment loop
-    # ====================================================================
+    samples = load_jsonl(jsonl)
+    print(f"Loaded {len(samples)} samples from {jsonl}", file=sys.stderr)
+    if args.hateful_only:
+        n0 = len(samples)
+        samples = [s for s in samples if int(s.get("label", 0)) == 1]
+        print(f"[hateful_only] {n0} -> {len(samples)} hateful images", file=sys.stderr)
+    if args.limit:
+        samples = samples[:args.limit]
+        print(f"[limit] using first {len(samples)} samples", file=sys.stderr)
+
+    n_reps = args.n_reps if args.n_reps is not None else config.get("n_reps", 3)
+    cli_stages = set(args.stages) if args.stages else None
+    experiments = {k: v for k, v in experiments.items()
+                   if args.eval_types is None or k in args.eval_types}
+
+    stages_src = f"CLI override {sorted(cli_stages)}" if cli_stages else "per-experiment (YAML)"
+    print(f"[stages] {stages_src}  n_reps={n_reps}", file=sys.stderr)
+
     for eval_type, exp_cfg in experiments.items():
         for model_cfg in exp_cfg["models"]:
-            vlm_name = model_cfg["vlm_name"]
-            slug = slugify(vlm_name)
-
-            all_done = all(_summary_row_exists(summary_path, eval_type, slug, r) for r in range(n_reps))
-            if all_done:
-                print(f"\n[skip] {eval_type}/{slug} — all {n_reps} reps already in summary", file=sys.stderr)
-                continue
-
-            sep = "=" * 70
-            print(f"\n{sep}", file=sys.stderr)
-            print(f"EXPERIMENT: {eval_type} | MODEL: {vlm_name}", file=sys.stderr)
-            print(sep, file=sys.stderr)
-
-            # Phase A: VLM (detection + prompts) — skipped if --mitigation_only or exp config says mitigation_only
-            skip_detection = args.mitigation_only or exp_cfg.get("mitigation_only", False)
-
-            if not skip_detection:
-                print(f"\n[Phase A] VLM: detection + prompt generation ({n_reps} reps)", file=sys.stderr)
-
-                vlm = processor = cls_head = None
-                if not args.metrics_only:
-                    print("[load] Loading VLM …", file=sys.stderr)
-                    vlm, processor = instantiate_vlm(
-                        vlm_name, CACHE_DIR,
-                        adapter_path=model_cfg.get("adapter_path"),
-                        mitigation_adapter_path=model_cfg.get("mitigation_adapter_path"),
-                    )
-                    print(f"[load] VLM on {vlm.device}", file=sys.stderr)
-
-                    if model_cfg.get("cls_head_path"):
-                        cls_head = load_cls_head(vlm, model_cfg["cls_head_path"])
-
-                # Pre-load detection metrics from rep 0 if already computed (resumable runs).
-                rep0_det_csv = out_root / f"{eval_type}_{slug}" / "rep_00" / "detection_predictions.csv"
-                det_metrics_dict = compute_detection_metrics(rep0_det_csv) if rep0_det_csv.exists() else {}
-
-                for rep in range(n_reps):
-                    if _summary_row_exists(summary_path, eval_type, slug, rep):
-                        print(f"  [rep_{rep:02d}] already done — skip", file=sys.stderr)
-                        continue
-
-                    rep_dir = out_root / f"{eval_type}_{slug}" / f"rep_{rep:02d}"
-                    det_csv = rep_dir / "detection_predictions.csv"
-                    mit_prompt_dir = rep_dir / "mitigated"
-
-                    print(f"  [rep_{rep:02d}] Detection + Prompt gen", file=sys.stderr)
-
-                    if not args.metrics_only:
-                        run_detection(vlm, processor, samples, img_root, det_csv, cls_head=cls_head)
-
-                    if rep == 0 and det_csv.exists():
-                        det_metrics_dict = compute_detection_metrics(det_csv)
-
-                    if exp_cfg.get("run_mitigation") and not args.skip_mitigation and not args.metrics_only:
-                        run_mitigation_prompts(vlm, processor, samples, img_root, det_csv, mit_prompt_dir)
-
-                if vlm is not None:
-                    del vlm, processor
-                    if cls_head is not None:
-                        del cls_head
-                    torch.cuda.empty_cache()
-
-            else:
-                # Skip detection (via --mitigation_only flag or YAML config): go directly to prompt gen + diffusion
-                mode_str = "YAML config" if exp_cfg.get("mitigation_only") else "CLI flag"
-                print(f"\n[Phase A (mitigation_only via {mode_str})] VLM: prompt generation ({n_reps} reps)", file=sys.stderr)
-
-                vlm = processor = None
-                if not args.metrics_only:
-                    print("[load] Loading VLM …", file=sys.stderr)
-                    vlm, processor = instantiate_vlm(
-                        vlm_name, CACHE_DIR,
-                        adapter_path=model_cfg.get("adapter_path"),
-                        mitigation_adapter_path=model_cfg.get("mitigation_adapter_path"),
-                    )
-                    print(f"[load] VLM on {vlm.device}", file=sys.stderr)
-
-                det_metrics_dict = {}  # Empty: no detection metrics
-
-                for rep in range(n_reps):
-                    if _summary_row_exists(summary_path, eval_type, slug, rep):
-                        print(f"  [rep_{rep:02d}] already done — skip", file=sys.stderr)
-                        continue
-
-                    rep_dir = out_root / f"{eval_type}_{slug}" / f"rep_{rep:02d}"
-                    mit_prompt_dir = rep_dir / "mitigated"
-
-                    print(f"  [rep_{rep:02d}] Prompt generation (skip detection)", file=sys.stderr)
-
-                    # Only generate prompts, skip detection
-                    if not args.metrics_only and vlm is not None:
-                        run_mitigation_prompts(vlm, processor, samples, img_root, None, mit_prompt_dir)
-
-                if vlm is not None:
-                    del vlm, processor
-                    torch.cuda.empty_cache()
-
-            # Phase B: Diffusion
-            if exp_cfg.get("run_mitigation") and not args.skip_mitigation and not args.metrics_only:
-                print(f"\n[Phase B] Diffusion: image mitigation ({n_reps} reps)", file=sys.stderr)
-
-                diffusion_model = instantiate_diffusion(DIFFUSION_MODEL, cache_dir=CACHE_DIR)
-                generator = torch.Generator(device="cuda" if torch.cuda.is_available() else "cpu").manual_seed(42)
-
-                for rep in range(n_reps):
-                    if _summary_row_exists(summary_path, eval_type, slug, rep):
-                        print(f"  [rep_{rep:02d}] already done — skip", file=sys.stderr)
-                        continue
-
-                    rep_dir = out_root / f"{eval_type}_{slug}" / f"rep_{rep:02d}"
-                    mit_csv = rep_dir / "mitigation_results.csv"
-                    mit_dir = rep_dir / "mitigated"
-                    det_csv = rep_dir / "detection_predictions.csv"
-
-                    print(f"  [rep_{rep:02d}] Diffusion inference", file=sys.stderr)
-                    run_mitigation_diffusion(diffusion_model, samples, img_root, mit_csv, mit_dir, generator=generator, det_path=det_csv)
-
-                del diffusion_model
-                torch.cuda.empty_cache()
-
-            # Phase C: VLM judge + summary
-            if exp_cfg.get("run_mitigation") and not args.skip_mitigation:
-                print(f"\n[Phase C] VLM: judge + metrics ({n_reps} reps)", file=sys.stderr)
-
-                vlm = processor = None
-                if not args.metrics_only:
-                    print("[load] Loading VLM for judge …", file=sys.stderr)
-                    vlm, processor = instantiate_vlm(
-                        vlm_name, CACHE_DIR,
-                        adapter_path=model_cfg.get("adapter_path"),
-                        mitigation_adapter_path=model_cfg.get("mitigation_adapter_path"),
-                    )
-
-                for rep in range(n_reps):
-                    if _summary_row_exists(summary_path, eval_type, slug, rep):
-                        continue
-
-                    rep_dir = out_root / f"{eval_type}_{slug}" / f"rep_{rep:02d}"
-                    mit_csv = rep_dir / "mitigation_results.csv"
-                    mit_dir = rep_dir / "mitigated"
-
-                    if vlm is not None:
-                        run_judge(vlm, processor, mit_csv, mit_dir)
-
-                    mit_metrics = compute_mitigation_metrics(mit_csv, img_root) if mit_csv.exists() else {}
-
-                    summary_row = {
-                        "eval_type": eval_type,
-                        "rep": rep,
-                        "vlm_name": vlm_name,
-                        "model_slug": slug,
-                    }
-                    summary_row.update(det_metrics_dict)
-                    summary_row.update(mit_metrics)
-                    save_summary_row(summary_path, summary_row)
-                    print(f"  [rep_{rep:02d}] Summary saved", file=sys.stderr)
-
-                if vlm is not None:
-                    del vlm, processor
-                    torch.cuda.empty_cache()
-
-            else:
-                # No mitigation
-                print(f"\n[Phase C] Saving summary ({n_reps} reps)", file=sys.stderr)
-                for rep in range(n_reps):
-                    if not _summary_row_exists(summary_path, eval_type, slug, rep):
-                        summary_row = {
-                            "eval_type": eval_type,
-                            "rep": rep,
-                            "vlm_name": vlm_name,
-                            "model_slug": slug,
-                        }
-                        summary_row.update(det_metrics_dict)
-                        save_summary_row(summary_path, summary_row)
-                        print(f"  [rep_{rep:02d}] Summary saved", file=sys.stderr)
-
-    print(f"\n{'=' * 70}", file=sys.stderr)
-    print(f"All experiments done. Summary → {summary_path}", file=sys.stderr)
-    print(f"{'=' * 70}", file=sys.stderr)
+            run_experiment(eval_type, exp_cfg, model_cfg, samples, img_root, out_root,
+                           summary_path, n_reps, cli_stages, cache_dir,
+                           diffusion_model, args.diffusion_offload)
 
     aggregate_results(summary_path)
+    print(f"\nDone. Summary -> {summary_path}", file=sys.stderr)
 
 
 if __name__ == "__main__":

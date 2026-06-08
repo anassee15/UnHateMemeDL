@@ -1,11 +1,11 @@
-# Quick test config — for rapid iteration
-# Usage: python run_experiment_grid.py --config experiments_quick_test.yaml
+# Quick test config — exercises the whole pipeline on the smallest model.
+# Usage: python run_experiment_grid.py --config experiments_quick_test.yaml --limit 3 --hateful_only
 
-n_reps: 1  # Single rep for speed
+n_reps: 1
 
 experiments:
-  baseline:
-    description: "Baseline detection only (quick test)"
-    run_mitigation: false
+  smoke:
+    description: "Full pipeline smoke test (detection -> prompt -> diffusion -> metrics)"
+    stages: [detection, prompt, diffusion, metrics]
     models:
       - Qwen/Qwen2.5-VL-7B-Instruct

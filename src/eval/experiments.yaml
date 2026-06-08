@@ -1,12 +1,21 @@
 # Configuration for multi-experiment grid evaluation
-# Usage: python run_experiment_grid.py --config experiments.yaml --n_reps 3
+# Usage: python run_experiment_grid.py --config experiments.yaml
+#
+# Per-experiment 'stages' selects what runs (any subset of):
+#   detection, prompt, diffusion, judge, metrics
+# 'judge' runs automatically before 'metrics' when mitigated images lack prob_after,
+# so you usually don't need to list it. Override globally on the CLI with --stages.
+# Optional 'pipeline' picks the
+# detection prompting strategy (default | zeroshot | fewshot_synthetic |
+# fewshot_real | sentiment_single | sentiment_chained | category_sentiment |
+# category_fewshot), set per experiment or per model.
 
 n_reps: 3
 
 experiments:
   baseline:
     description: "Baseline detection + mitigation (no adapters)"
-    run_mitigation: true
+    stages: [detection, prompt, diffusion, metrics]
     models:
       - google/gemma-4-31B-it
       - Qwen/Qwen3.6-27B
@@ -14,7 +23,7 @@ experiments:
 
   cls_head:
     description: "Detection with classification head (no mitigation)"
-    run_mitigation: false
+    stages: [detection, metrics]
     models:
       - model: google/gemma-4-31B-it
         cls_head_path: checkpoints/cls_head_gemma4/best_classifier.pt
@@ -25,7 +34,7 @@ experiments:
 
   lora_detect:
     description: "Detection with LoRA adapter (no mitigation)"
-    run_mitigation: false
+    stages: [detection, metrics]
     models:
       - model: google/gemma-4-31B-it
         adapter_path: checkpoints/detection_gemma4_lora/adapter_detect/
@@ -34,10 +43,12 @@ experiments:
 
   lora_mitigate:
     description: "Mitigation with LoRA adapter (skip detection)"
-    run_mitigation: true
-    mitigation_only: true   # Skip detection, test mitigation pipeline only
+    stages: [prompt, diffusion, metrics]
+    prob_before_from: baseline   # reuse baseline detection prob as prob_before for TR%
     models:
-      - model: google/gemma-4-31B-it
-        mitigation_adapter_path: checkpoints/mitigation_gemma4_lora/
       - model: Qwen/Qwen2.5-VL-7B-Instruct
         mitigation_adapter_path: checkpoints/mitigation_qwen2_5_lora/
+      - model: google/gemma-4-31B-it
+        mitigation_adapter_path: checkpoints/mitigation_gemma4_lora/
+      - model: Qwen/Qwen3.6-27B
+        mitigation_adapter_path: checkpoints/mitigation_qwen3_6_lora/
