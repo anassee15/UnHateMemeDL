@@ -19,12 +19,13 @@ Mitigate hateful content on image meme using open source Vision-Language Models 
 Two-stage pipeline: a **VLM** detects hateful memes and plans a mitigation, then a **diffusion model** rewrites the image.
 
 ```
+report/                 # poster and report pdfs, screencast of pipeline inference
+data/                   # datasets (source memes, eval split, fine-tuning data)
+docker/                 # image used to run on the EPFL RCP cluster
 src/
   unhate_pipeline/      # core two-stage pipeline (VLM -> diffusion)
   eval/                 # evaluation scripts (detection / mitigation / grid)
   finetuning/           # LoRA / classification-head fine-tuning
-data/                   # datasets (source memes, eval split, fine-tuning data)
-docker/                 # image used to run on the EPFL RCP cluster
 ```
 
 ### `src/unhate_pipeline/` — the pipeline
