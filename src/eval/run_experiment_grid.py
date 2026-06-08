@@ -500,8 +500,8 @@ def compute_mitigation_metrics(mit_csv_path: Path, img_root: Path, prob_before_l
         print(f"[step5] prob_before assumed 1.0 for {n_assumed}/{len(hateful_rows)} "
               f"GT-hateful rows (no detection available)", file=sys.stderr)
     prob_before = np.array([_prob_before(r) for r in hateful_rows], dtype=float)
-    with np.errstate(divide="ignore", invalid="ignore"):
-        tr_per_img = np.where(prob_before > 0, (prob_before - prob_after) / prob_before, 0.0)
+    prob_before_clamped = np.maximum(prob_before, 0.5)
+    tr_per_img = (prob_before_clamped - prob_after) / prob_before_clamped
 
     text_rows = [r for r in hateful_rows if r.get("original_text") and r.get("replacement_text")]
     orig_texts = [r["original_text"].replace("\\n", " ") for r in text_rows]
