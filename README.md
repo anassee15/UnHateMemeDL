@@ -22,6 +22,7 @@ Two-stage pipeline: a **VLM** detects hateful memes and plans a mitigation, then
 report/                 # poster and report pdfs, screencast of pipeline inference
 data/                   # datasets (source memes, eval split, fine-tuning data)
 docker/                 # image used to run on the EPFL RCP cluster
+models/                 # training configs for every fine-tuned model we tested
 src/
   unhate_pipeline/      # core two-stage pipeline (VLM -> diffusion)
   eval/                 # evaluation scripts (detection / mitigation / grid)
@@ -79,6 +80,46 @@ Images (`*.png`) are not tracked in git — point `--img_dir` to wherever the da
 |---|---|
 | `Dockerfile` | Builds the CUDA image (PyTorch, transformers, diffusers, eval deps) used on the RCP cluster. |
 | `requirements.txt` | Python dependencies installed into the image. |
+
+### `models/`
+
+One folder per fine-tuned model we tested. Each holds the exact `run_config.json` (every training hyperparameter — base model, dataset, LoRA rank, learning rate, epochs, etc.) used to produce that run. The folder name encodes the task and base model: `<task>_<base-model>_<method>`, e.g. `detection_qwen2_5_lora` or `mitigation_gemma4_lora`.
+
+| Prefix | Trained with | Config maps to |
+|---|---|---|
+| `detection_*_lora` | LoRA detection adapter | `src/finetuning/train_detection.py` |
+| `cls_head_*` | Frozen-VLM classification head | `src/finetuning/train_cls_head.py` |
+| `mitigation_*_lora` / `mitigation_*_qlora` | (Q)LoRA mitigation adapter | `src/finetuning/train_mitigation.py` |
+
+To reproduce a run, pass the fields from its `run_config.json` to the matching training script. Two examples:
+
+```bash
+# detection_qwen2_5_lora — LoRA detection adapter on Qwen2.5-VL-7B
+python3 src/finetuning/train_detection.py \
+  --model_name Qwen/Qwen2.5-VL-7B-Instruct \
+  --dataset_jsonl data/finetuning/detection_full.jsonl \
+  --output_dir checkpoints/detection_qwen2_5_lora \
+  --lora_r 16 --lora_alpha 32 --learning_rate 2e-4 \
+  --num_epochs 3 --grad_accum 16 --cache_dir {HF_CACHE_DIR}
+
+# cls_head_gemma4 — classification head on a frozen Gemma-4
+python3 src/finetuning/train_cls_head.py \
+  --model_name google/gemma-4-31B-it \
+  --train_jsonl data/hateful-meme/train.jsonl \
+  --dev_jsonl   data/hateful-meme/dev.jsonl \
+  --img_dir     data/hateful-meme \
+  --output_dir  checkpoints/cls_head_gemma4 \
+  --learning_rate 1e-3 --num_epochs 4 --batch_size 4 \
+  --balance --cache_dir {HF_CACHE_DIR}
+
+# mitigation_qwen3_6_lora — LoRA mitigation adapter on Qwen3.6-27B
+python3 src/finetuning/train_mitigation.py \
+  --model_name Qwen/Qwen3.6-27B \
+  --dataset_jsonl data/finetuning/mitigation.jsonl \
+  --output_dir checkpoints/mitigation_qwen3_6_lora \
+  --lora_r 16 --lora_alpha 32 --learning_rate 2e-4 \
+  --num_epochs 3 --grad_accum 16 --max_length 2048 --cache_dir {HF_CACHE_DIR}
+```
 
 
 ## Usage — commands per use case

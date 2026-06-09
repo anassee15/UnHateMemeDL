@@ -1,0 +1,21 @@
+{
+  "model_name": "google/gemma-4-31B-it",
+  "dataset_jsonl": "data/finetuning/detection_full.jsonl",
+  "output_dir": "checkpoints/detection_gemma4_lora",
+  "cache_dir": "../hf_cache",
+  "val_ratio": 0.1,
+  "lora_r": 16,
+  "lora_alpha": 32,
+  "lora_dropout": 0.05,
+  "learning_rate": 0.0002,
+  "num_epochs": 3,
+  "batch_size": 1,
+  "grad_accum": 16,
+  "max_length": 1024,
+  "max_train_samples": null,
+  "bf16": true,
+  "balance": false,
+  "classification_weight": 7.0,
+  "skip_final_eval": false,
+  "seed": 42
+}

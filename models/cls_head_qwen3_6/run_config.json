@@ -1,0 +1,19 @@
+{
+  "model_name": "Qwen/Qwen3.6-27B",
+  "train_jsonl": "data/hateful-meme/train.jsonl",
+  "dev_jsonl": "data/hateful-meme/dev.jsonl",
+  "exclude_jsonl": "data/eval_data/eval_490_balanced.jsonl",
+  "img_dir": "data/hateful-meme",
+  "output_dir": "checkpoints/cls_head_qwen3_6",
+  "cache_dir": "../hf_cache",
+  "val_ratio": 0.1,
+  "learning_rate": 0.001,
+  "num_epochs": 4,
+  "batch_size": 4,
+  "grad_accum": 4,
+  "max_length": 2048,
+  "max_train_samples": null,
+  "balance": true,
+  "skip_final_eval": false,
+  "seed": 42
+}
